@@ -3,17 +3,12 @@
 -- @classmod BattleFormula
 class('BattleFormula')
 
+local math_floor = math.floor
+local math_ceil = math.ceil
+local LMath_AccumulateAdd = LMath.AccumulateAdd
+
 ---Constructor
 function BattleFormula:ctor( ... )
-end
-
-function BattleFormula.CalcMagicQuality( _point, ... )
-	for i = #Constants.BATTLE_MAGIC_QUALITY_POINT_LIST, 1, -1 do
-		if _point >= Constants.BATTLE_MAGIC_QUALITY_POINT_LIST[i] then
-			return i - 1
-		end
-	end
-	return 0
 end
 
 local FormulaSwitcher = {
@@ -26,23 +21,63 @@ local FormulaSwitcher = {
 	[BattleFormulaType.ROUND] = function( _base, _param, _battleUnit, ... )
 		return _base + _param * gBattleLogic.roundNum
 	end,
-	[BattleFormulaType.LEVEL] = function( _base, _param, _battleUnit, ... )
-		return _base + _param * _battleUnit.gunCount
+	[BattleFormulaType.COOP_ROUND] = function( _base, _param, _battleUnit, ... )
+		return _base + _param * math_ceil((gBattleLogic.roundNum - 0.5) / 10)
+	end,
+	-- 塔星级
+	[BattleFormulaType.STAR] = function( _base, _param, _battleUnit, _targetUnit, ... )
+		return GetValue(_base, _battleUnit, _targetUnit) + _battleUnit.star * _param
+	end,
+	-- 目标塔星级
+	[BattleFormulaType.TARGETSTAR] = function( _base, _param, _battleUnit, _targetUnit, ... )
+		return GetValue(_base, _battleUnit, _targetUnit) + _targetUnit.star * _param
+	end,
+	-- 塔战斗阶数
+	[BattleFormulaType.TOWERGRADE] = function( _base, _param, _battleUnit, ... )
+		return GetValue(_base, _battleUnit) + _param * (_battleUnit:GetGrade() - 1), true
+	end,
+	-- 塔养成等级
+	[BattleFormulaType.TOWERLEVEL] = function( _base, _param, _battleUnit, ... )
+		return GetValue(_base, _battleUnit) + _param * _battleUnit:GetLevel()
+	end,
+	[BattleFormulaType.COOP_BOSSHP] = function( _base, _param, _battleUnit, ... )
+		local roundNum = gBattleLogic.roundNum
+		local offset = roundNum > _param and roundNum - _param or 0
+		local formulaId = _base + roundNum - offset
+		return GetValue(formulaId, _battleUnit, nil, offset)
+	end,
+	[BattleFormulaType.COOP_BOSSHP_REAL] = function( _base, _param, _battleUnit, _targetUnit, _offset, ... )
+		return _base + _param * _offset
 	end,
 	[BattleFormulaType.COOP_MONSTERHP] = function( _base, _param, _battleUnit, ... )
-		local wheelCount = ToInt((gBattleLogic.roundNum - 1) / 10) + 1
-		local roundStart = (1 + LMath.AccumulateAdd(1, gBattleLogic.roundNum - 1)) * _base
-		local roundStepStart = LMath.AccumulateAdd(0, wheelCount - 1) * 10 * _param
-		local roundStep = roundStepStart + (gBattleLogic.roundNum % 10) * wheelCount * _param
-		return roundStart + (gBattleLogic.waveNum - gBattleLogic.roundStartWaveNum + 1) * roundStep
+		local roundNum = gBattleLogic.roundNum
+		local offset = roundNum > _param and roundNum - _param or 0
+		local formulaId = _base + roundNum - offset
+		return GetValue(formulaId, _battleUnit, nil, offset)
+	end,
+	[BattleFormulaType.COOP_MONSTERHP_REAL] = function( _base, _param, _battleUnit, _targetUnit, _offset, ... )
+		return _base + _param * (gBattleLogic.waveNum - gBattleLogic.roundStartWaveNum + 1 + _offset * 10)
+	end,
+	-- PK Boss血量
+	[BattleFormulaType.PK_BOSSHP] = function( _base, _param, _battleUnit, _targetUnit, ... )
+		local roundNum = gBattleLogic.roundNum
+		local offset = roundNum > _param and roundNum - _param or 0
+		local formulaId = _base + roundNum - offset
+		return GetValue(formulaId, _battleUnit, nil, offset)
+	end,
+	-- PK Boss血量
+	[BattleFormulaType.PK_BOSSHP_REAL] = function( _base, _param, _battleUnit, _targetUnit, _offset, ... )
+		local totalMonsterHP = gBattleLogic:GetTotalMonsterHP(_battleUnit.player)
+		return _base + _param * _offset + math_floor(totalMonsterHP * 0.5)
 	end,
 	[BattleFormulaType.PK_MONSTERHP] = function( _base, _param, _battleUnit, ... )
-		local roundNum = gBattleLogic.roundNum > _param and _param or gBattleLogic.roundNum
-		local formulaId = _base + roundNum
-		return GetValue(formulaId, _battleUnit)
+		local roundNum = gBattleLogic.roundNum
+		local offset = roundNum > _param and roundNum - _param or 0
+		local formulaId = _base + roundNum - offset
+		return GetValue(formulaId, _battleUnit, nil, offset)
 	end,
-	[BattleFormulaType.PK_MONSTERHP_REAL] = function( _base, _param, _battleUnit, ... )
-		return _base + _param * (gBattleLogic.waveNum - gBattleLogic.roundStartWaveNum)
+	[BattleFormulaType.PK_MONSTERHP_REAL] = function( _base, _param, _battleUnit, _targetUnit, _offset, ... )
+		return _base + _param * (gBattleLogic.waveNum - gBattleLogic.roundStartWaveNum + _offset * 8)
 	end,
 	-- 随机
 	[BattleFormulaType.RANDOM] = function( _base, _param, _battleUnit, ... )
@@ -50,56 +85,30 @@ local FormulaSwitcher = {
 	end,
 	-- 当前SP
 	[BattleFormulaType.CURRENTSP] = function( _base, _param, _battleUnit, ... )
-		return _base + ToInt(_battleUnit.player.point * _param / Constants.PERCENT_MAX)
+		return _base + math_floor(_battleUnit.player.point * _param / Constants.PERCENT_MAX)
 	end,
 	-- 同怪物攻击次数
 	[BattleFormulaType.ATTACKTIMES] = function( _base, _param, _battleUnit, ... )
-		return _base + _battleUnit.sameMonsterAttackTimes * _param
-	end,
-	-- 塔阶数
-	[BattleFormulaType.GUN] = function( _base, _param, _battleUnit, _targetUnit, ... )
-		return _base + _battleUnit.gunCount * _param
-	end,
-	-- 目标塔阶数
-	[BattleFormulaType.TARGETGUN] = function( _base, _param, _battleUnit, _targetUnit, ... )
-		return _base + _targetUnit.gunCount * _param
-	end,
-	-- 塔阶数+品质
-	[BattleFormulaType.GUNQUALITY] = function( _base, _param, _battleUnit, _targetUnit, ... )
-		return _base * _battleUnit.gunCount + 0 * _param
-	end,
-	-- 品质
-	[BattleFormulaType.QUALITY] = function( _base, _param, _battleUnit, _targetUnit, ... )
-		return _base + 0 * _param
+		local sameMonsterAttackTimes = _battleUnit.paramMap[BattleParamType.SAMEMONSTERATTACKTIMES] or 0
+		return _base + sameMonsterAttackTimes * _param
 	end,
 	-- 怪物数量
 	[BattleFormulaType.MONSTERCOUNT] = function( _base, _param, _battleUnit, _targetUnit, ... )
 		local monsterCount = _battleUnit.player:GetMonsterCount()
-		return ToInt(_base + monsterCount * _param / Constants.PERCENT_MAX)
-	end,
-	-- 怪物数量+品质
-	[BattleFormulaType.MONSTERCOUNTQUALITY] = function( _base, _param, _battleUnit, _targetUnit, ... )
-		local monsterCount = _battleUnit.player:GetMonsterCount()
-		return ToInt((_base + 0 * _param) * monsterCount / Constants.PERCENT_MAX)
-	end,
-	-- PK Boss血量
-	[BattleFormulaType.PK_BOSSHP] = function( _base, _param, _battleUnit, _targetUnit, ... )
-		local baseHp = NilDefault(Constants.BATTLE_PK_BOSS_HP[gBattleLogic.roundNum], Constants.BATTLE_PK_BOSS_HP[#Constants.BATTLE_PK_BOSS_HP])
-		local totalMonsterHP = gBattleLogic:GetTotalMonsterHP(_battleUnit.player)
-		return baseHp + ToInt(totalMonsterHP * 0.5)
+		return math_floor(_base + monsterCount * _param / Constants.PERCENT_MAX)
 	end,
 	-- 怪物血量百分比
 	[BattleFormulaType.MONSTERHPPER] = function( _base, _param, _battleUnit, _targetUnit, ... )
-		return ToInt(_base + _param * gBattleLogic.monsterHP / Constants.PERCENT_MAX)
+		return math_floor((_base + _param * _targetUnit.maxHP / Constants.PERCENT_MAX) / (_targetUnit.monsterRes.hpScale / Constants.PERCENT_MAX))
 	end,
 	-- 伤害衰减
 	[BattleFormulaType.DAMAGEATTENUATION] = function( _base, _param, _battleUnit, _targetUnit, _index, ... )
 		local attenuationFormulaId = _base
-		local damage = GetValue(_param, _battleUnit, _targetUnit)
+		local damage, bindGrade = GetValue(_param, _battleUnit, _targetUnit)
 		if _param == 0 then
 			damage = _battleUnit:GetAttack()
 		end
-		return GetValue(attenuationFormulaId, _battleUnit, _targetUnit, _index, damage)
+		return GetValue(attenuationFormulaId, _battleUnit, _targetUnit, _index, damage), bindGrade
 	end,
 	-- 衰减公式
 	[BattleFormulaType.ATTENUATION] = function( _base, _param, _battleUnit, _targetUnit, _index, _damage, ... )
@@ -110,18 +119,15 @@ local FormulaSwitcher = {
 		else
 			percent = percent <= limit and limit or percent
 		end
-		return ToInt(_damage * percent / Constants.PERCENT_MAX)
-	end,
-	-- 回合+魔法使用次数
-	[BattleFormulaType.ROUNDTIMES] = function( _base, _param, _battleUnit, _targetUnit, _index, _damage, ... )
-		return gBattleLogic.roundNum * (_base + _param * _battleUnit.player.magicSpellTimes)
+		return math_floor(_damage * percent / Constants.PERCENT_MAX)
 	end,
 	-- 连接
 	[BattleFormulaType.CONNECT] = function( _base, _param, _battleUnit, _targetUnit, _index, _damage, ... )
-		if _targetUnit.curConnectCount <= 1 then
+		local curConnectCount = _targetUnit.paramMap[BattleParamType.CURCONNECTCOUNT]
+		if not curConnectCount or curConnectCount <= 1 then
 			return 0
 		end
-		return _base + _param * (_targetUnit.curConnectCount - 1)
+		return (GetValue(_base, _battleUnit, _targetUnit) + GetValue(_param, _battleUnit, _targetUnit)) * (curConnectCount - 1), true
 	end
 }
 

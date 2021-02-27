@@ -47,17 +47,6 @@ function BattleStat:AddRollPoint( _point, ... )
 	self.totalRollPoint = self.totalRollPoint + _point
 end
 
-function BattleStat:AddMagicPoint( _point, ... )
-	self.totalMagicPoint = self.totalMagicPoint + _point
-	self.totalMagicTimes = self.totalMagicTimes + 1
-end
-
-function BattleStat:AddMagic( _frame, _magicResId, ... )
-	local magicRes = GameResMgr.GetMagicRes(_magicResId)
-	-- self.magicList = self.magicList .. string.format('%d:%d ', _magicResId, _frame)
-	self.magicList = self.magicList .. string.format('%s ', magicRes.name)
-end
-
 function BattleStat:ResetSecondDamage( ... )
 	self.damagePerSecond = self.curDamagePerSecond
 	self.curDamagePerSecond = 0

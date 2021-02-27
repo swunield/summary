@@ -3,6 +3,8 @@
 -- @classmod BattlePage
 class('BattlePage', PageBase)
 
+local math_floor = math.floor
+
 ---Constructor
 function BattlePage:ctor( page, ... )
 	self.super = Super(page, ...)
@@ -11,13 +13,12 @@ function BattlePage:ctor( page, ... )
 	self.dragTowerIndex = 0				-- 拖动的塔索引
 	self.dragOriginPos = false 			-- 拖动的塔初始位置
 	self.allCoveredTowerList = {}		-- 所有遮盖的塔
-	self.isTowerFlying = false 			-- 塔是否正在飞
 
 	self.myGBPlayer = false 			-- 玩家自己
 	self.myTowerList = {}				-- 玩家塔列表
 	self.enemyGBPlayer = false
 
-	self.isMagicEnable = false 			-- 魔法禁用
+	self.battleType = BattleType.PK
 end
 
 function BattlePage:OnPageDestroy( ... )
@@ -37,10 +38,6 @@ function BattlePage:Init( ... )
 			GBMain.INSTANCE():ExecRoll()
 			return false
 		end,
-		['ClickMagic'] = function( _index, ... )
-			GBMain.INSTANCE():ExecMagic(ToInt(_index))
-			return false
-		end,
 		-- 阻塞服务端指令
 		['BlockServer'] = function( ... )
 			GBMain.BlockServerCommand(true)
@@ -50,6 +47,16 @@ function BattlePage:Init( ... )
 		['UnBlockServer'] = function( ... )
 			GBMain.BlockServerCommand(false)
 			return false
+		end,
+		-- 升级
+		['Upgrade'] = function( _index, ... )
+			GBMain.INSTANCE():ExecUpgrade(tonumber(_index))
+			return false
+		end,
+		-- 英雄天赋
+		['ClickHero'] = function( ... )
+			GBMain.INSTANCE():ExecHeroTalent()
+			return false
 		end
 	}
 
@@ -58,29 +65,6 @@ function BattlePage:Init( ... )
 		gGameNetMgr:DisConnect(NetSessionType.ROOM)
 		gGameClient:JumpToScene('Home')
 	end)
-
-	-- 己方塔注册拖动事件
-	for i = 1, 15 do
-		local towerIndex = i
-		local childName = string.format('pnl_battle/pnl_field/pnl_mine/pnl_bg/pnl_tower/item_%d/pnl_tower/pnl_tower', i)
-		local objTower = self:GetChild(childName)
-		local tower = { towerIndex = towerIndex, objTower = objTower, objContainer = objTower.transform.parent.gameObject }
-		table_insert(self.myTowerList, tower)
-
-		UIUtils.SetObjectPressCallBack(objTower, nil, function( ... )
-			self:OnTowerPressDown(towerIndex, objTower)
-		end, function( ... )
-			self:OnTowerPressUp(towerIndex, objTower)
-		end)
-
-		UIUtils.AddObjectDragEvent(objTower, function( _pointEvent )
-			self:OnTowerDragBegin(towerIndex, _pointEvent)
-		end, function( _pointEvent )
-			self:OnTowerDraging(towerIndex, _pointEvent)
-		end, function( _pointEvent )
-			self:OnTowerDragEnd(towerIndex, _pointEvent)
-		end)
-	end
 end
 
 function BattlePage:OnGetUIGroup( _groupPath, ... )
@@ -100,15 +84,23 @@ function BattlePage:OnShow( _data, ... )
 	self.dragTowerIndex = 0
 	self.dragOriginPos = false
 	self.allCoveredTowerList = {}
-	self.isTowerFlying = false
 
 	self.myGBPlayer = false
 	self.enemyGBPlayer = false
 
-	self.isMagicEnable = false
-
 	-- 初始化战斗
 	self:InitBattle()
+
+	-- 初始界面状态
+	UIUtils.SelectActionSelector(self, self.battleType == BattleType.COOP and 'OnShowCoop' or 'OnShowPk')
+	UIUtils.SelectActionSelector(self, gamebattle.gBattleRecord.isLocal and 'OnShowLocal' or 'OnShowNotLocal')
+	UIUtils.SelectActionSelector(self, gamebattle.gBattleRecord.isRealTime and 'OnShowRealTime' or 'OnShowNotRealTime')
+
+	-- 刷新
+	self:UpdateTowerGrade(self.myGBPlayer.player)
+	self:UpdateTowerGrade(self.enemyGBPlayer.player)
+	self:UpdateHeroTalent(self.myGBPlayer.player)
+	self:UpdateHeroTalent(self.enemyGBPlayer.player)
 end
 
 function BattlePage:OnHide( ... )
@@ -119,45 +111,40 @@ function BattlePage:OnHide( ... )
 	self.dragTowerIndex = 0
 	self.dragOriginPos = false
 	self.allCoveredTowerList = {}
-	self.isTowerFlying = false
 
 	self.myGBPlayer = false
 	self.enemyGBPlayer = false
 end
 
-function BattlePage:OnPageRefresh( _key, _data, ... )
-	if _key == 'Stat' then
-		local player = self.myGBPlayer.player
-		local stat = player.stat
-		local firstMonsterSpeed = player.firstMonster and player.firstMonster:GetSpeed() or 0
-		local firstMonsterDefence = player.firstMonster and player.firstMonster:GetDefence() or 0
-		local statContent = string.format('   头部怪物 速度 %d  护甲 %d\n   子弹总计 %d  丢失子弹 %d  子弹丢失率 %.1f%%\n   伤害总计 %d  每秒伤害 %d\n   魔法次数 %d  魔法 %s\n   当前怪物 %d  总计怪物 %d  击杀怪物 %d  缓冲怪物 %d\n   当前SP %d  总计SP %d  怪物SP %d  抽卡SP %d  魔法SP %d\n   当前兵线 %d\n   当前血量 %d\n', 
-								firstMonsterSpeed, firstMonsterDefence, stat.totalMissile, stat.totalMissMissile, stat.totalMissMissile * 100 / stat.totalMissile, stat.totalDamage, stat.damagePerSecond, 
-								stat.totalMagicTimes, stat.magicList, stat.totalMonster, stat.totalMonster + stat.totalKillMonster, stat.totalKillMonster, stat.pendingMonsterCount,
-								player.point, stat.totalPoint, stat.totalMonsterPoint, stat.totalRollPoint, stat.totalMagicPoint,
-								player.firstMonster and player.firstMonster.position or 0, player.curHP)
-		UIUtils.SetChildText(self, 'pnl_debug/pnl_self/txt', statContent)
-		
-		player = self.enemyGBPlayer.player
-		stat = player.stat
-		firstMonsterSpeed = player.firstMonster and player.firstMonster:GetSpeed() or 0
-		firstMonsterDefence = player.firstMonster and player.firstMonster:GetDefence() or 0
-		statContent = string.format('   当前血量 %d\n   当前兵线 %d\n   当前SP %d  总计SP %d  怪物SP %d  抽卡SP %d  魔法SP %d\n   当前怪物 %d  总计怪物 %d  击杀怪物 %d  缓冲怪物 %d\n   魔法次数 %d  魔法 %s\n   伤害总计 %d  每秒伤害 %d\n   子弹总计 %d  丢失子弹 %d  子弹丢失率 %.1f%%\n   头部怪物 速度 %d  护甲 %d', 
-								player.curHP, player.firstMonster and player.firstMonster.position or 0, player.point, stat.totalPoint, stat.totalMonsterPoint, stat.totalRollPoint, stat.totalMagicPoint,
-								stat.totalMonster, stat.totalMonster + stat.totalKillMonster, stat.totalKillMonster, stat.pendingMonsterCount, stat.totalMagicTimes, stat.magicList, 
-								stat.totalDamage, stat.damagePerSecond, stat.totalMissile, stat.totalMissMissile, stat.totalMissMissile * 100 / stat.totalMissile, firstMonsterSpeed, firstMonsterDefence)
-		UIUtils.SetChildText(self, 'pnl_debug/pnl_enemy/txt', statContent)
-	elseif _key == 'UpdatePoint' then
+local PageRefreshSwitcher = {
+	['UpdatePoint'] = function( self, _data, ... )
 		self:UpdatePoint(_data.point, _data.costPoint)
-	elseif _key == 'AddMagic' then
-		self:AddMagic(_data.magicIndex, _data.magicData)
-	elseif _key == 'UpdateMagic' then
-		self:UpdateMagic(_data.magicIndex, _data.magicData)
-	elseif _key == 'ServerFrame' then
-		UIUtils.SetChildText(self, 'pnl_debug/txt_info', string.format('T[%s] [%s] S[%d-%d-%d] [%d]', FormatTime(ToInt(gamebattle.gBattleTime / 1000)), FormatTime(ToInt((gamebattle.gBattleLogic.roundDuration - (gamebattle.gBattleTime - gamebattle.gBattleLogic.roundStartTime)) / 1000)), _data.ServerFrame, _data.LocalFrame, 
+	end,
+	['ServerFrame'] = function( self, _data, ... )
+		UIUtils.SetChildText(self, 'pnl_debug/txt_info', string.format('T[%s] [%s] S[%d-%d-%d] [%d]', FormatTime(math_floor(gamebattle.gBattleTime / 1000)), FormatTime(math_floor((gamebattle.gBattleLogic.roundDuration - (gamebattle.gBattleTime - gamebattle.gBattleLogic.roundStartTime)) / 1000)), _data.ServerFrame, _data.LocalFrame, 
 			_data.ServerFrame - _data.LocalFrame, gamebattle.gBattleManager.battleState))
-	elseif _key == 'BeginMagicCD' then
-		UIUtils.SelectActionSelector(self, 'BeginMagicCD_All')
+	end,
+	['Upgrade'] = function( self, _data, ... )
+		self:UpdateTowerGrade(_data.gbPlayer.player, _data.poolIndex)
+	end,
+	['RefreshHeroTalentCDTime'] = function( self, _data, ... )
+		self:RefreshHeroTalentCDTime(_data.playerId, _data.pastTime, _data.leftTime)
+	end,
+	['RoundStart'] = function( self, _data, ... )
+		self:OnRoundStart(_data.duration, _data.roundNum)
+	end,
+	['UpdatePlayerHP'] = function( self, _data, ... )
+		self:UpdatePlayerHP(_data.playerId, _data.curHP, _data.maxHP, _data.isInit)
+	end,
+	['OnBossEnter'] = function( self, _data, ... )
+		self:OnBossEnter(_data.param1)
+	end
+}
+
+function BattlePage:OnPageRefresh( _key, _data, ... )
+	local switcher = PageRefreshSwitcher[_key]
+	if switcher then
+		switcher(self, _data)
 	end
 end
 
@@ -172,10 +159,38 @@ function BattlePage:InitBattle( ... )
 		return
 	end
 
-	GBMain.INSTANCE():Initialize(gUIDataMgr:GetUserId(), battleRecord, UIUtils.GetChildComponent(self, 'pnl_battle/pnl_field', 'UBattle'))
+	self.battleType = battleRecord.battleType
 
-	-- 单机模式
-	if not battleRecord.isRealTime then
+	local uBattleField = GOUtils.GetComponentWithTag('BattleField', 'UBattleField', false)
+	if not uBattleField then
+		return
+	end
+
+	local uBattle = uBattleField:SwitchBattle(battleRecord.battleType - 1)
+	GBMain.INSTANCE():Initialize(gUIDataMgr:GetUserId(), battleRecord, uBattle)
+
+	-- 注册格子事件
+	local uMyPlayer = uBattle:GetUBattlePlayer(0)
+	local allGrids = uMyPlayer.canvasGridList
+	for i = 1, allGrids.Count do
+		local towerIndex = i
+		local objDrag = allGrids[i - 1].objDrager
+		UIUtils.SetObjectPressCallBack(objDrag, nil, function( ... )
+			self:OnTowerPressDown(towerIndex)
+		end, function( ... )
+			self:OnTowerPressUp(towerIndex)
+		end)
+
+		UIUtils.AddObjectDragEvent(objDrag, function( _pointEvent )
+			self:OnTowerDragBegin(towerIndex, _pointEvent)
+		end, nil, function( _pointEvent )
+			self:OnTowerDragEnd(towerIndex, _pointEvent)
+		end)
+	end
+
+	-- 单机模式or快照
+	if not battleRecord.isRealTime or battleRecord.tSnapShot then
+		warn('BeginBattle')
 		GBMain.INSTANCE():BeginBattle()
 	end
 
@@ -191,40 +206,35 @@ function BattlePage:DestroyBattle( ... )
 end
 
 function BattlePage:UpdatePoint( _point, _costPoint, ... )
-	UIUtils.SetChildText(self, 'pnl_battle/pnl_operation/pnl_up/pnl_info_l/pnl_point/txt', _point)
-	UIUtils.SetChildText(self, 'pnl_battle/pnl_operation/pnl_up/pnl_chouka/btn_chouka/txt_cost', _costPoint)
-	if not self.isMagicEnable and _costPoint ~= 10 then
-		UIUtils.SelectActionSelector(self, 'BeginMagicCD_All')
-		self.isMagicEnable = true
-	end
+	UIUtils.SetChildText(self, 'pnl_battle/pnl_operation/pnl_mine/pnl_lvl_num/txt', _point)
+	UIUtils.SetChildText(self, 'pnl_battle/pnl_operation/pnl_mine/btn_ta_up/txt_cost', _costPoint)
 end
 
-function BattlePage:OnTowerPressDown( _towerIndex, _objTower, ... )
-	local pressTower = self.myGBPlayer:GetGBTowerByPos(_towerIndex)
-	if not pressTower then
+function BattlePage:OnTowerPressDown( _towerIndex, ... )
+	local pressGBTower = self.myGBPlayer:GetGBTowerByPos(_towerIndex)
+	if not pressGBTower then
 		return
 	end
 
-	for i = 1, #self.myTowerList do
-		local myTower = self.myTowerList[i]
-		local tower = self.myGBPlayer:GetGBTowerByPos(myTower.towerIndex)
-		if tower and i ~= _towerIndex and not pressTower:CanMerge(tower) then
-			table_insert(self.allCoveredTowerList, myTower.objTower)
-			UIUtils.SelectChildActionSelector(myTower.objTower, 'tower', 'FadeInCover')
+	for i = 1, 15 do
+		local gbTower = self.myGBPlayer:GetGBTowerByPos(i)
+		if gbTower and i ~= _towerIndex and not pressGBTower:CanMerge(gbTower) then
+			table.insert(self.allCoveredTowerList, gbTower)
+			gbTower:ShowCover(true, 'OnShowCover')
 		end
 	end
 end
 
-function BattlePage:OnTowerPressUp( _towerIndex, _objTower, ... )
+function BattlePage:OnTowerPressUp( _towerIndex, ... )
 	for i = 1, #self.allCoveredTowerList do
-		UIUtils.SelectChildActionSelector(self.allCoveredTowerList[i], 'tower', 'FadeOutCover')
+		self.allCoveredTowerList[i]:ShowCover(false, 'OnHideCover')
 	end
 	self.allCoveredTowerList = {}
 end
 
 function BattlePage:OnTowerDragBegin( _towerIndex, _pointEvent, ... )
 	-- 禁止同时拖动多个
-	if self.isTowerFlying or (self.objDragTower and self.objDragTower ~= _pointEvent.pointerDrag) then
+	if self.objDragTower and self.objDragTower ~= _pointEvent.pointerDrag then
 		return
 	end
 
@@ -236,10 +246,6 @@ function BattlePage:OnTowerDragBegin( _towerIndex, _pointEvent, ... )
 	self.dragTowerIndex = _towerIndex
 	self.objDragTower = _pointEvent.pointerDrag
 
-	UIUtils.SetObjectParent(self.objDragTower, self, true)
-	self.dragOriginPos = self.objDragTower.transform.localPosition
-
-	UIUtils.SetObjectPosition(self.objDragTower, _pointEvent.position.x, _pointEvent.position.y)
 	if dragTower.tower then
 		UIUtils.SetChildText(self, 'pnl_debug/txt_tower', string.format('Tower [%d] [%s] 攻击[%d] 攻速[%d] 暴击[%d] 暴倍[%d]', dragTower.tower.towerId, dragTower.tower.unitId, dragTower.tower:GetAttack(), dragTower.tower:GetAtkSpeed(), dragTower.tower:GetAttribute(AttriType.CRITICAL), dragTower.tower:GetAttribute(AttriType.CRITICALSCALE)))
 		local bufferList = dragTower.tower.carryBufferList
@@ -247,93 +253,122 @@ function BattlePage:OnTowerDragBegin( _towerIndex, _pointEvent, ... )
 			local buffer = bufferList[i]
 			for n = 1, #buffer.layerList do
 				local layer = buffer.layerList[n]
-				warn('BufferLayer', dragTower.posIndex, buffer.bufferRes.id, gameutils.JSON:encode(layer.valueList), layer.ownerUnit.posIndex and layer.ownerUnit.posIndex or 0)
+				warn('BufferLayer', dragTower.posIndex, buffer.bufferRes.id, gameutils.JSON:encode(layer.valueList), layer.owner.unitId or 0)
 			end
 		end
 	end
 end
 
-function BattlePage:OnTowerDraging( _towerIndex, _pointEvent, ... )
-	-- 禁止同时拖动多个
-	if self.isTowerFlying or not self.objDragTower or self.objDragTower ~= _pointEvent.pointerDrag then
-		return
-	end
-
-	UIUtils.SetObjectPosition(self.objDragTower, _pointEvent.position.x, _pointEvent.position.y)
-end
-
 function BattlePage:OnTowerDragEnd( _towerIndex, _pointEvent, ... )
 	-- 禁止同时拖动多个
-	if self.isTowerFlying or not self.objDragTower or self.objDragTower ~= _pointEvent.pointerDrag then
+	if not self.objDragTower or self.objDragTower ~= _pointEvent.pointerDrag then
 		return
 	end
 
 	local dragTower = self.myGBPlayer:GetGBTowerByPos(_towerIndex)
 	if not dragTower then
-		UIUtils.SetObjectParent(self.objDragTower, self.myTowerList[_towerIndex].objContainer, false, 0, 0)
 		self.objDragTower = false
 		return
 	end
 
 	-- 找到目标塔位置
-	local dragEndPosition = self.objDragTower.transform.position
-	local dragEndIndex = self.dragTowerIndex
-	for i = 1, #self.myTowerList do
-		if i ~= self.dragTowerIndex then
-			local towerTrans = self.myTowerList[i].objTower.transform
-			local endPos = towerTrans:InverseTransformPoint(dragEndPosition)
-			if towerTrans.rect:Contains(endPos) then
-				dragEndIndex = i
-				break
-			end
-		end
+	local dragEndIndex = self.myGBPlayer:GetGridIndexByPosition(self.objDragTower.transform.position)
+	if dragEndIndex == 0 then
+		self.objDragTower = false
+		return
 	end
 
 	local dragEndTower = self.myGBPlayer:GetGBTowerByPos(dragEndIndex)
 	if not dragEndTower or not dragTower:CanMerge(dragEndTower) then
 		-- 不能合成，飞回原地
-		self.isTowerFlying = true
-		local curPosition = self.objDragTower.transform.localPosition
-		GOUtils.TweenMoveTo(self.objDragTower, curPosition.x, curPosition.y, self.dragOriginPos.x, self.dragOriginPos.y, 0.1, 0, nil, true, function( ... )
-			UIUtils.SetObjectParent(self.objDragTower, self.myTowerList[_towerIndex].objContainer, false, 0, 0)
-			self.isTowerFlying = false
-			self.objDragTower = false
-		end)
+		self.objDragTower = false
 		return
 	end
 
 	-- 直接放回原地
-	UIUtils.SetObjectParent(self.objDragTower, self.myTowerList[_towerIndex].objContainer, false, 0, 0)
 	self.objDragTower = false
 
 	-- 执行合成
 	GBMain.INSTANCE():ExecMerge(self.dragTowerIndex, dragEndIndex)
 end
 
-function BattlePage:AddMagic( _magicIndex, _magicData, ... )
-	local magicId = _magicData.magicId
-	local magicRes = self:UpdateMagic(_magicIndex, _magicData)
-	if not magicRes then
+function BattlePage:UpdateTowerGrade( _player, _poolIndex, ... )
+	if not _poolIndex then
+		for i = 1, 5 do
+			self:UpdateTowerGrade(_player, i)
+		end
 		return
+	end
+	local towerResId = _player:GetTowerResIdByPoolIndex(_poolIndex)
+	local towerRes = GameResMgr.GetBattleTowerRes(towerResId)
+	if not towerRes then
+		return
+	end
+	local isMine = self:IsMyPlayer(_player.playerId)
+	local grade = _player:GetTowerGrade(towerResId)
+	local cost = _player:GetTowerUpgradeCostByPoolIndex(_poolIndex)
+	local path = isMine and 'pnl_battle/pnl_operation/pnl_mine/pnl_tower/item_' or 'pnl_battle/pnl_operation/pnl_enemy/pnl_tower/item_'
+	UIUtils.SetChildImage(self, path .. _poolIndex .. '/btn_magic/pnl_icon/icon', PainterMgr.GetPathOfTowerIcon(towerRes.iconName))
+	UIUtils.SetChildText(self, path .. _poolIndex .. '/btn_magic/pnl_lvl/txt_num', cost == 0 and 'MAX' or grade)
+	UIUtils.SetChildActive(self, path .. _poolIndex .. '/btn_magic/pnl_lvl/txt', cost ~= 0)
+	if isMine then
+		UIUtils.SetChildText(self, path .. _poolIndex .. '/btn_magic/pnl_num/txt', cost)
+		UIUtils.SetChildActive(self, path .. _poolIndex .. '/btn_magic/pnl_num', cost ~= 0)
 	end
 end
 
-function BattlePage:UpdateMagic( _magicIndex, _magicData, ... )
-	local magicId = _magicData and _magicData.magicId or 0
-	warn('UpdateMagic', _magicIndex, magicId)
-	local magicRes = GameResMgr.GetMagicRes(magicId)
-	if not magicRes then
-		UIUtils.SetChildActive(self, string.format('pnl_battle/pnl_operation/pnl_magic/item_%d', _magicIndex), false)
-		return false
+function BattlePage:RefreshHeroTalentCDTime( _playerId, _pastTime, _leftTime, ... )
+	local startPercent = _leftTime / (_pastTime + _leftTime)
+	local isMine = self:IsMyPlayer(_playerId)
+	local iconPath = isMine and 'pnl_battle/pnl_operation/pnl_mine/pnl_hero/btn_hero/img_cd' or 'pnl_battle/pnl_operation/pnl_enemy/pnl_hero/btn_hero/img_cd'
+	UIUtils.ImageValueTo(self:GetChild(iconPath), startPercent, 0, _leftTime * 0.001, nil, false, gGBField.looper)
+end
+
+function BattlePage:UpdateHeroTalent( _player )
+	local hero = _player.hero
+	if not hero.heroRes then
+		return
+	end
+	local isMine = self:IsMyPlayer(_player.playerId)
+	if isMine then
+		local heroTalentType = hero:GetHeroTalentType()
+		UIUtils.SetChildSelectable(self, 'pnl_battle/pnl_operation/pnl_mine/pnl_hero/btn_hero/btn', heroTalentType == BattleHeroTalentType.MANUAL)
 	end
 
-	UIUtils.SetChildActive(self, string.format('pnl_battle/pnl_operation/pnl_magic/item_%d', _magicIndex), true)
-	UIUtils.SetChildText(self, string.format('pnl_battle/pnl_operation/pnl_magic/item_%d/btn_magic/txt', _magicIndex), magicRes.name)
-	UIUtils.SetChildText(self, string.format('pnl_battle/pnl_operation/pnl_magic/item_%d/btn_magic/txt_cost', _magicIndex), _magicData.costPoint)
-	UIUtils.SetChildActive(self, string.format('pnl_battle/pnl_operation/pnl_magic/item_%d/img_block', _magicIndex), _magicData.index ~= _magicIndex)
-	local color = NilDefault(BattleConstants.BATTLE_TOWER_COLOR_LIST[magicRes.name], {0, 0, 0})
-	UIUtils.SetChildColor(self, string.format('pnl_battle/pnl_operation/pnl_magic/item_%d/btn_magic', _magicIndex), Color(color[1] / 255, color[2] / 255, color[3] / 255, 1))
-	return magicRes
+	local iconPath = isMine and 'pnl_battle/pnl_operation/pnl_mine/pnl_hero/btn_hero/icon' or 'pnl_battle/pnl_operation/pnl_enemy/pnl_hero/btn_hero/icon'
+	UIUtils.SetChildImage(self,  iconPath, 'image/icon/hero/' .. hero.heroRes.iconName)
+end
+
+function BattlePage:IsMyPlayer( _playerId, ... )
+	return GBMain.INSTANCE():IsMyPlayer(_playerId)
+end
+
+function BattlePage:OnRoundStart( _duration, _roundNum, ... )
+	_duration = _duration * 0.001
+	UIUtils.TextValueTo(self:GetChild('pnl_battle/pnl_operation/pnl_enemy/pnl_right_ui/pnl_time/txt'), _duration, 0, _duration, 'MS', nil, nil, nil, gGBField.looper)
+
+	UIUtils.SetChildActive(self, 'pnl_battle/pnl_operation/pnl_enemy/pnl_right_ui/pnl_round', _roundNum > 0)
+	UIUtils.SetChildText(self, 'pnl_battle/pnl_operation/pnl_enemy/pnl_right_ui/pnl_round/txt', _roundNum)
+
+	-- 回合提示
+	if _roundNum > 0 then
+		UIUtils.SetChildText(self, 'pnl_animation/battle_round/pnl/txt_num', _roundNum)
+		UIUtils.SelectChildActionSelector(self, 'pnl_animation/battle_round', 'Play')
+	end
+end
+
+function BattlePage:UpdatePlayerHP( _playerId, _curHP, _maxHP, _isInit, ... )
+	local isMine = self:IsMyPlayer(_playerId)
+	local pnlHeartPath = isMine and 'pnl_battle/pnl_operation/pnl_mine/pnl_hero/pnl_heart' or 'pnl_battle/pnl_operation/pnl_enemy/pnl_hero/pnl_heart'
+	if _isInit then
+		UIUtils.SelectChildActionSelector(self, pnlHeartPath, 'Init_' .. _maxHP)
+	end
+	_curHP = _curHP < 0 and 0 or (_curHP > _maxHP or _maxHP and _curHP)
+	UIUtils.SelectChildActionSelector(self, pnlHeartPath, 'Heart_' .. _curHP)
+end
+
+function BattlePage:OnBossEnter( _bossResId, ... )
+	UIUtils.SelectChildActionSelector(self, 'pnl_animation/battle_boss', 'Play')
 end
 
 classend()

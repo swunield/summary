@@ -3,8 +3,10 @@
 -- @classmod BattleLogic
 class('BattleLogic')
 
+local math_floor = math.floor
+
 ---Constructor
-function BattleLogic:ctor( ... )
+function BattleLogic:ctor( _isLocal, ... )
 	self.playerList = {}
 	self.waveNum = 0			-- 波数
 	self.roundNum = 0			-- 回合数
@@ -13,6 +15,24 @@ function BattleLogic:ctor( ... )
 	self.roundDuration = 0		-- 当前回合持续时间
 	self.battleRes = false 		-- 战斗配置
 	self.monsterHP = 0			-- 怪物血量，公式用
+	self.isLocal = _isLocal or false -- 是否本地
+end
+
+function BattleLogic:Serialize( _tLogic, ... )
+	_tLogic.RoundNum = self.roundNum
+	_tLogic.WaveNum = self.waveNum
+	_tLogic.RoundStartWaveNum = self.roundStartWaveNum
+	_tLogic.RoundStartTime = self.roundStartTime
+end
+
+function BattleLogic:DeSerialize( _tLogic, ... )
+	if not _tLogic then
+		return
+	end
+	self.roundNum = _tLogic.RoundNum
+	self.waveNum = _tLogic.WaveNum
+	self.roundStartWaveNum = _tLogic.RoundStartWaveNum
+	self.roundStartTime = _tLogic.RoundStartTime
 end
 
 function BattleLogic:Finalize( ... )
@@ -35,28 +55,17 @@ function BattleLogic:CheckBattleEnd( ... )
 	return false
 end
 
-function BattleLogic:OnMonsterDie( _monster, ... )
-	if not _monster or not _monster:HasUnitFlag(BattleUnitFlag.DEATH) then
-		return false
-	end
-	return true
+function BattleLogic:OnMonsterLeave( _monster, _leaveFlags, ... )
 end
 
-function BattleLogic:GetMonsterResId( _monsterType, ... )
+function BattleLogic:GetMonsterResId( _monsterType, _index, ... )
 	if _monsterType <= MonsterType.ALL or _monsterType > MonsterType.BOSS then
 		return 0
 	end
 	if _monsterType == MonsterType.BOSS then
-		return self.battleRes.bossIdList[1]
+		return self.battleRes.bossIdList[_index or 1]
 	end
 	return self.battleRes.monsterList[_monsterType]
-end
-
-function BattleLogic:GetMonsterHPScale( _monsterType, ... )
-	if _monsterType <= MonsterType.ALL or _monsterType >= MonsterType.BOSS then
-		return 100
-	end
-	return self.battleRes.monsterHPScaleList[_monsterType]
 end
 
 function BattleLogic:GetMonsterWaveCount( _monsterType, ... )
@@ -67,11 +76,16 @@ function BattleLogic:GetMonsterWaveCount( _monsterType, ... )
 end
 
 function BattleLogic:GetRoundData( _round, ... )
-	local round = _round > #self.battleRes.roundList and #self.battleRes.roundList or _round
-	return self.battleRes.roundList[round]
+	local roundList = self.battleRes.roundList
+	local round = _round > #roundList and #roundList or _round
+	return roundList[round]
 end
 
-function BattleLogic:OnMagicSpell( _player, _magicData, ... )
+function BattleLogic:RefreshMonsterHP( ... )
+	local monsterId = self:GetMonsterResId(MonsterType.NORMAL)
+	local normalMonsterRes = GameResMgr.GetBattleMonsterRes(monsterId)
+	local monsterHPScale = normalMonsterRes.hpScale / Constants.PERCENT_MAX
+	self.monsterHP = math_floor(BattleFormula.GetValue(normalMonsterRes.hpId) * monsterHPScale)
 end
 
 classend()

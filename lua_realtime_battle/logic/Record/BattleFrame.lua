@@ -3,6 +3,8 @@
 -- @classmod BattleFrame
 class('BattleFrame')
 
+local table_insert = table.insert
+
 ---Constructor
 function BattleFrame:ctor( ... )
 	-- 序列化数据
@@ -25,28 +27,33 @@ function BattleFrame:Load( _tBattleFrame, ... )
 		return
 	end
 
-	self.frameCount = NilDefault(_tBattleFrame.FrameCount, 0)
+	self.frameCount = _tBattleFrame.FrameCount or 0
 	self.frameType = _tBattleFrame.FrameType
-	self.param1 = _tBattleFrame.Param1
-	self.param2 = _tBattleFrame.Param2
+	self.param1 = _tBattleFrame.Param1 or false
+	self.param2 = _tBattleFrame.Param2 or false
 	self.param3 = false
-	self.point = _tBattleFrame.Point
-	self.frameId = NilDefault(_tBattleFrame.FrameId, false)
+	self.point = _tBattleFrame.Point or false
+	self.frameId = _tBattleFrame.FrameId or false
+	self.actionList = {}
 end
 
 local FrameActionSwitcher = {
-	[BattleFrameActionType.ADDTOWER] = function( self, _player, _towerRes, _gunCount, _posIndex, _pendingId, ... )
+	[BattleFrameActionType.ADDTOWER] = function( self, _player, _towerRes, _star, _posIndex, _pendingId, ... )
 		-- 添加逻辑塔
-		local tower = _player:AddTower(_towerRes, _gunCount, _posIndex, self.frameType == BattleFrameType.ROLL)
-		BattleMain.INSTANCE():SendGBCommand(GBCommandType.PENDINGTOWER, _player.playerId, tower, _pendingId)
+		local tower = _player:AddTower(_towerRes, _star, _posIndex, self.frameType == BattleFrameType.ROLL)
+		local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.PENDINGTOWER, _player.playerId, tower, _pendingId)
 	end,
-	[BattleFrameActionType.REMOVETOWER] = function( self, _player, _posIndex, _leaveType, ... )
+	[BattleFrameActionType.REMOVETOWER] = function( self, _player, _posIndex, _leaveFlags, ... )
 		-- 移除塔
-		_player:RemoveTower(_posIndex, _leaveType)
+		_player:RemoveTower(_posIndex, _leaveFlags)
 	end,
 	[BattleFrameActionType.EXCHANGETOWER] = function( self, _player, _dragIndex, _targetIndex, ... )
 		-- 交换塔
 		_player:ExchangeTower(_dragIndex, _targetIndex)
+	end,
+	[BattleFrameActionType.UPGRADETOWER] = function( self, _player, _towerPoolIndex, ... )
+		-- 升级塔
+		_player:UpgradeTower(_towerPoolIndex)
 	end
 }
 
@@ -57,10 +64,10 @@ function BattleFrame:AddFrameAction( _actionType, _player, _param1, _param2, _pa
 	local frameAction = {
 		actionType = _actionType,
 		player = _player,
-		param1 = NilDefault(_param1, false),
-		param2 = NilDefault(_param2, false),
-		param3 = NilDefault(_param3, false),
-		param4 = NilDefault(_param4, false)
+		param1 = _param1 or false,
+		param2 = _param2 or false,
+		param3 = _param3 or false,
+		param4 = _param4 or false
 	}
 	table_insert(self.actionList, frameAction)
 end

@@ -8,24 +8,16 @@ function GBMonster:ctor( ... )
 	self.super = Super()
 
 	self.monster = false 				-- 战斗逻辑怪物
-	self.objMonsterHP = false 			-- 怪物血量物件
 
 	self.position = 0 					-- 显示层位置
 	self.speed = 0 						-- 显示层速度，每秒
 end
 
 function GBMonster:Destroy( ... )
-	self.uBattleUnit.unitId = ''
-
-	if self.gameObject then
-		GameObjectPool.ReleaseObject(self.gameObject)
-	end
+	self:FireUnitEvent('OnMonsterDie')
 
 	-- 父类销毁
 	self.super:Destroy()
-
-	-- 销毁当前类声明的变量，尤其是与UnityObject之间的引用
-	self:ClearContent()
 end
 
 function GBMonster:Init( _monster, _gbPlayer, ... )
@@ -33,32 +25,29 @@ function GBMonster:Init( _monster, _gbPlayer, ... )
 		return false
 	end
 
-	local objMonster = GameObjectPool.INSTANCE:Request('battle/battle_monster', true)
-	if not objMonster then
-		return false
-	end
-
-	self.uBattleUnit = UIUtils.GetObjectComponent(objMonster, 'UBattleMonster')
-	self.gameObject = objMonster.gameObject
-	self.transform = objMonster.transform
-	self.objMonsterHP = UIUtils.GetChild(self.gameObject, 'txt')
 	self.monster = _monster
-	self.unit = self.monster
+	self.battleUnit = self.monster
+	self.gbUnit = self
 	self.gbPlayer = _gbPlayer
-	self.uBattleUnit.unitId = self.monster.unitId
 
-	-- 放入战场
-	GOUtils.SetParent(self.gameObject, self.gbPlayer.objMonsterRoad, false, -1, -1, -1, string.format('monster_%d', self.monster.monsterId))
+	self:CheckFrameChasing('Init', function( ... )
+		local objMonster = GameObjectPool.INSTANCE:Request(self.monster.monsterRes.prefabName, 'animation/other/prefabs/monster/', true)
+		if not objMonster then
+			return false
+		end
+
+		self.uBattleUnit = UIUtils.GetObjectComponent(objMonster, 'UBattleMonster')
+		self.gameObject = objMonster.gameObject
+		self.transform = objMonster.transform
+		self.uBattleUnit.unitId = self.monster.unitId
+		-- 放入战场
+		GOUtils.SetParent(self.gameObject, self.gbPlayer.objMonsterRoad, false, -1, -1, -1, string.format('monster_%d', self.monster.monsterId))
+	end)
+
 	-- 初始化位置
 	self:SetPosition(self.monster.position)
 	-- 初始化血量
-	self:UpdateHP()
-	-- 魔法怪
-	if self.monster.isMagicMonster then
-		UIUtils.SetChildColor(self.gameObject, 'frm', Color(1, 0, 1, 1))
-	else
-		UIUtils.SetChildColor(self.gameObject, 'frm', Color(1, 1, 1, 1))
-	end
+	self:UpdateHP(true)
 
 	return true
 end
@@ -70,8 +59,15 @@ function GBMonster:Update( _deltaTime, ... )
 	self:SetPosition(position)
 end
 
-function GBMonster:UpdateHP( ... )
-	GOUtils.SetText(self.objMonsterHP, tostring(self.monster.curHP))
+function GBMonster:UpdateHP( _isInit, ... )
+	local curHP = self.monster.curHP
+	local maxHP = self.monster.maxHP
+	if _isInit and curHP == maxHP then
+		return
+	end
+	self:CheckFrameChasing('UpdateHP', function( ... )
+		self.uBattleUnit:UpdateHP(curHP / maxHP)
+	end)
 end
 
 function GBMonster:Move( _position, _speed, ... )
@@ -113,8 +109,10 @@ function GBMonster:SetPosition( _position, ... )
 	end
 	local posX = startPoint.x + (endPoint.x - startPoint.x) * (_position - startPoint.z) / (endPoint.z - startPoint.z)
 	local posY = startPoint.y + (endPoint.y - startPoint.y) * (_position - startPoint.z) / (endPoint.z - startPoint.z)
-	GOUtils.SetLocalPosition(self.gameObject, posX, posY, 1)
 	self.position = _position
+	self:CheckFrameChasing('SetPosition', function( ... )
+		self.uBattleUnit:SetPosition(posX, posY, self.monster.sortIndex * 100)
+	end)
 end
 
 classend()

@@ -3,11 +3,21 @@
 -- @classmod BattlePlayerFrame
 class('BattlePlayerFrame')
 
+local table_insert = table.insert
+local LMQueue = plugins.gameutils.LMQueue
+local LMQueue_New = LMQueue.New
+local LMQueue_Peek = LMQueue.Peek
+local LMQueue_EnQueue = LMQueue.EnQueue
+local LMQueue_DeQueue = LMQueue.DeQueue
+local LMQueue_SetCapacity = LMQueue.SetCapacity
+local LMQueue_ForEach = LMQueue.ForEach
+local LMQueue_Clear = LMQueue.Clear
+
 ---Constructor
 function BattlePlayerFrame:ctor( ... )
 	self.frameList = {}							-- 战斗帧列表，BattleFrame
 
-	self.pendingFrameQueue = LQueue(32)			-- 战斗缓冲帧队列，BattleFrame
+	self.pendingFrameQueue = false				-- 战斗缓冲帧队列，BattleFrame
 	self.nextIndex = 1							-- 运行时下一帧列表索引
 	self.player = false							-- 玩家
 end
@@ -31,6 +41,9 @@ end
 
 function BattlePlayerFrame:Init( _player, ... )
 	self.player = _player
+
+	self.pendingFrameQueue = LMQueue_New()
+	LMQueue_SetCapacity(self.pendingFrameQueue, 32)
 end
 
 function BattlePlayerFrame:GetNextFrame( _moveToNext, ... )
@@ -63,22 +76,26 @@ function BattlePlayerFrame:AddBattleFrame( _frame, _frameCount, _frameType, _par
 end
 
 function BattlePlayerFrame:AddBattlePendingFrame( _frame, ... )
-	self.pendingFrameQueue:EnQueue(_frame)
+	LMQueue_EnQueue(self.pendingFrameQueue, _frame)
 end
 
 function BattlePlayerFrame:CheckBattlePendingFrame( _frame, ... )
 	if not _frame then
 		return false
 	end
-	local pendingFrame = self.pendingFrameQueue:Peek()
+	local pendingFrame = LMQueue_Peek(self.pendingFrameQueue)
 	if not pendingFrame or pendingFrame.frameId ~= _frame.frameId then
 		return false
 	end
 	-- 移除缓冲帧
-	self.pendingFrameQueue:DeQueue()
+	LMQueue_DeQueue(self.pendingFrameQueue)
 	-- 通知战斗帧结束缓冲
 	pendingFrame:OnPendingOver()
 	return true
+end
+
+function BattlePlayerFrame:HavePendingFrame( ... )
+	return self.pendingFrameQueue.size ~= 0
 end
 
 classend()

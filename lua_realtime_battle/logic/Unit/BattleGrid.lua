@@ -3,6 +3,8 @@
 -- @classmod BattleGrid
 class('BattleGrid', BattleUnit)
 
+local TSGrid = gModel.TSGrid
+
 ---Constructor
 function BattleGrid:ctor( ... )
 	self.super = Super( ...)
@@ -12,7 +14,28 @@ function BattleGrid:ctor( ... )
 	self.tower = false				-- 关联Tower
 end
 
-function BattleGrid:Destroy( _leaveType, ... )
+function BattleGrid:Serialize( ... )
+	local tGrid = TSGrid:new{}
+	tGrid.Tower = self.tower and self.tower:Serialize() or nil
+	tGrid.Unit = self.super:Serialize()
+	return tGrid
+end
+
+function BattleGrid:DeSerialize( _tGrid, _player, _index, ... )
+	if not _tGrid or not _index or not _player then
+		return
+	end
+	self:Init(_index, _player)
+	self.super:DeSerialize(_tGrid.Unit)
+	if _tGrid.Tower then
+		self.tower = BattleTower()
+		self.tower:DeSerialize(_tGrid.Tower, _player, _index)
+	else
+		self.tower = false
+	end
+end
+
+function BattleGrid:Destroy( _leaveFlags, ... )
 	self.carryBufferList = {}
 	self.tower = false
 end
@@ -20,7 +43,11 @@ end
 function BattleGrid:Init( _gridIndex, _player, ... )
 	self.gridIndex = _gridIndex
 	self.player = _player
+	self.unit = self
 	self.unitId = self:GenerateUnitId(self.gridIndex)
+
+	-- 父类初始化
+	self.super:Init()
 
 	return true
 end
@@ -36,7 +63,7 @@ function BattleGrid:OnTowerEnter( _tower, ... )
 		local buffer = self.carryBufferList[i]
 		for n = 1, #buffer.layerList do
 			local layer = buffer.layerList[n]
-			local towerBuffer = self.tower:AddBuffer(buffer.bufferRes.id, layer.ownerUnit)
+			local towerBuffer = self.tower:AddBuffer(buffer.bufferRes.id, layer.owner)
 			if towerBuffer then
 				buffer.bindBufferId = towerBuffer.bufferId
 			end
@@ -62,14 +89,14 @@ end
 function BattleGrid:OnBufferAdd( _buffer, ... )
 	-- 已存在塔
 	if self.tower then
-		local towerBuffer = self.tower:AddBuffer(_buffer.bufferRes.id, _buffer.ownerUnit)
+		local towerBuffer = self.tower:AddBuffer(_buffer.bufferRes.id, _buffer.owner)
 		if towerBuffer then
 			_buffer.bindBufferId = towerBuffer.bufferId
 		end
 	end
 
 	-- 通知前端刷新格子
-	BattleMain.INSTANCE():SendGBCommand(GBCommandType.GRIDUPDATE, self.player.playerId, self.gridIndex, self.carryBufferList)
+	local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.GRIDUPDATE, self.player.playerId, self.gridIndex, self.carryBufferList)
 end
 
 function BattleGrid:OnBufferRemove( _buffer, ... )
@@ -80,18 +107,18 @@ function BattleGrid:OnBufferRemove( _buffer, ... )
 	end
 
 	-- 通知前端刷新格子
-	BattleMain.INSTANCE():SendGBCommand(GBCommandType.GRIDUPDATE, self.player.playerId, self.gridIndex, self.carryBufferList)
+	local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.GRIDUPDATE, self.player.playerId, self.gridIndex, self.carryBufferList)
 end
 
 function BattleGrid:OnBufferLayerRemove( _buffer, _layerCount, ... )
-	local layerCount = NilDefault(_layerCount, 1)
+	local layerCount = _layerCount or 1
 	-- 已存在塔
 	if self.tower then
 		self.tower:RemoveBufferLayerByBufferId(_buffer.bindBufferId, layerCount)
 	end
 
 	-- 通知前端刷新格子
-	BattleMain.INSTANCE():SendGBCommand(GBCommandType.GRIDUPDATE, self.player.playerId, self.gridIndex, self.carryBufferList)
+	local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.GRIDUPDATE, self.player.playerId, self.gridIndex, self.carryBufferList)
 end
 
 function BattleGrid:OnAllBufferRemove( ... )
@@ -101,7 +128,7 @@ function BattleGrid:OnAllBufferRemove( ... )
 	end
 
 	-- 通知前端刷新格子
-	BattleMain.INSTANCE():SendGBCommand(GBCommandType.GRIDUPDATE, self.player.playerId, self.gridIndex, self.carryBufferList)
+	local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.GRIDUPDATE, self.player.playerId, self.gridIndex, self.carryBufferList)
 end
 
 classend()

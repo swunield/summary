@@ -3,6 +3,18 @@ Global.BattleConstants = {
 	BATTLE_MAX_FRAME = 9999999,
 	-- 怪物路径长度
 	BATTLE_ROAD_LENGTH = 250000,
+	-- 怪物路径单位长度
+	BATTLE_ROAD_UNIT_LENGTH = 2500,
+	-- 怪物路径长度
+	BATTLE_PK_ROAD_LENGTH = 250000,
+	-- 怪物路径单位长度
+	BATTLE_PK_ROAD_UNIT_LENGTH = 2500,
+	-- 怪物路径长度
+	BATTLE_COOP_ROAD_LENGTH = 185000,
+	-- 怪物路径单位长度
+	BATTLE_COOP_ROAD_UNIT_LENGTH = 1850,
+	-- 怪物路径拐点
+	BATTLE_COOP_CORNER = 74870,
 	-- 战场塔数量
 	BATTLE_MAX_TOWER = 15,
 	-- 战斗初始点数
@@ -100,13 +112,22 @@ Global.BattleConstants = {
 		-- EXATKSPEED
 		[7] = {
 			min = 100,
-			max = 5000,
+			max = 5000000,
 		},
 		-- SPEEDPERCENT
 		[13] = {
 			min = 0.45,
 			max = 2,
 		},
+	},
+	-- 战斗参数默认值
+	BATTLE_PARAM_DEFAULT = {
+		0,	-- 上一个怪物
+		0,	-- 同一怪物攻击次数
+		0,	-- 总攻击次数
+		0,	-- 总额外攻击次数
+		0,	-- 当前连接数量
+		-1	-- 总连接数量
 	}
 }
 export('BattleConstants', BattleConstants)

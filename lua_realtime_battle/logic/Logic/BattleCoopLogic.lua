@@ -3,25 +3,89 @@
 -- @classmod BattleCoopLogic
 class('BattleCoopLogic', BattleLogic)
 
+local table_insert = table.insert
+local math_floor = math.floor
+local math_ceil = math.ceil
+
+local TSLogic = gModel.TSLogic
+local TSPendingMonster = gModel.TSPendingMonster
+
 ---Constructor
-function BattleCoopLogic:ctor( ... )
-	self.super = Super(...)
-	self.pendingMonsterData = {}
+function BattleCoopLogic:ctor( _isLocal, ... )
+	self.super = Super(_isLocal, ...)
 	self.isBossPeriod = false			-- 是否Boss阶段
+	self.leftWaveNum = 0				-- 回合剩余波数
+	self.isBattleEnd = false			-- 是否战斗结束
+
+	self.roundList = {}					-- 回合数据
+end
+
+function BattleCoopLogic:Serialize( ... )
+	local tLogic = TSLogic:new{}
+	self.super:Serialize(tLogic)
+	tLogic.BossPeriod = self.isBossPeriod and 1 or nil
+	tLogic.LeftWaveNum = self.leftWaveNum ~= 0 and self.leftWaveNum or nil 
+	return tLogic
+end
+
+function BattleCoopLogic:DeSerialize( _tLogic, ... )
+	if not _tLogic then
+		return
+	end
+	self.super:DeSerialize(_tLogic)
+	self.isBossPeriod = _tLogic.BossPeriod == 1
+	self.leftWaveNum = _tLogic.LeftWaveNum or 0
+
+	self:RefreshMonsterHP()
+	self:GenerateMonster(self.leftWaveNum)
+
+	gBattleManager:RegisterSnapShotPushEndEvent(function( ... )
+		-- 通知客户端回合开始
+		local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.ROUNDSTART, 0, self.roundNum)
+	end)
+end
+
+function BattleCoopLogic:Initialize( _battleType, ... )
+	self.super:Initialize(_battleType)
+
+	-- 怪物路径
+	BattleConstants.BATTLE_ROAD_LENGTH = BattleConstants.BATTLE_COOP_ROAD_LENGTH
+	BattleConstants.BATTLE_ROAD_UNIT_LENGTH = BattleConstants.BATTLE_COOP_ROAD_UNIT_LENGTH
+
+	-- 距离数值表
+	Global.BattleMonsterDistance = {}
+	for gridIndex, distanceList in pairs(BattleCoopDistance) do
+		local monsterDistanceList = {}
+		BattleMonsterDistance[gridIndex] = monsterDistanceList
+		for i = 1, #distanceList do
+			table_insert(monsterDistanceList, math_ceil(distanceList[i] / Constants.BATTLE_FRAME_TIME))
+		end
+	end
+
+	-- 初始化回合数据
+	self:InitRound()
 end
 
 function BattleCoopLogic:Update( _deltaTime, ... )
-	self.super:Update(_deltaTime, ...)
+end
 
-	for i = 1, #self.playerList do
-		local player = self.playerList[i]
-		local pendingData = self.pendingMonsterData[player.playerId]
-		if pendingData.monsterCount > 0 and gBattleTime - pendingData.lastMonsterTime >= 500 then
-			local normalMonsterId = self:GetMonsterResId(MonsterType.NORMAL)
-			player:AddMonster(normalMonsterId)
-			pendingData.lastMonsterTime = gBattleTime
-			pendingData.monsterCount = pendingData.monsterCount - 1
-			player.stat:AddPendingMonster(false)
+function BattleCoopLogic:InitRound( ... )
+	local bossRoundList = self.battleRes.bossRound
+	local maxRound = bossRoundList[#bossRoundList]
+	for i = 1, #bossRoundList do
+		local preBossRound = i == 1 and 0 or bossRoundList[i - 1]
+		local curBossRound = bossRoundList[i]
+		if curBossRound - preBossRound > 1 then
+			local specialRound = math_ceil((curBossRound + preBossRound) / 2)
+			self.roundList[specialRound] = { roundType = BattleCoopRoundType.SPECIAL, monsterOrderList = self.battleRes.specialMonsterOrderList }
+		end
+		self.roundList[curBossRound] = { roundType = BattleCoopRoundType.BOSS, bossId = self.battleRes.bossIdList[((i - 1) % #self.battleRes.bossIdList) + 1] }
+	end
+	for i = 1, maxRound do
+		local round = self.roundList[i]
+		if not round then
+			round = { roundType = BattleCoopRoundType.NORMAL, monsterOrderList = self.battleRes.normalMonsterOrderList }
+			self.roundList[i] = round
 		end
 	end
 end
@@ -29,167 +93,99 @@ end
 function BattleCoopLogic:OnBattleBegin( ... )
 	self.super:OnBattleBegin()
 
-	for i = 1, #self.playerList do
-		self.pendingMonsterData[self.playerList[i].playerId] = {
-			monsterCount = 0,
-			lastMonsterTime = 0
-		}
-	end
+	self.roundNum = 0
+	self.waveNum = 0
+	self:OnNextRoundStart()
+end
 
-	self.roundNum = 1
-	self.roundStartWaveNum = 1
+-- 下一回合开始
+function BattleCoopLogic:OnNextRoundStart( ... )
+	self.isBossPeriod = false
+	self.roundNum = self.roundNum + 1
+	self.roundStartWaveNum = self.waveNum + 1
 	self.roundStartTime = gBattleTime
 	self:GenerateMonster()
+
+	-- gBattleManager:AddBattleLog(string.format('RoundStart Round[%d] Frame[%d]', self.roundNum, gBattleFrameCount))
+	-- warn('OnNextRoundStart', gBattleFrameCount, self.roundNum, self.roundStartWaveNum, self.roundStartTime)
+	-- 通知客户端回合开始
+	local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.ROUNDSTART, 0, self.roundNum)
 end
 
 -- 校验战斗是否结束
 function BattleCoopLogic:CheckBattleEnd( ... )
-	local playerCount = #self.playerList
-	for i = 1, playerCount do
-		local player = self.playerList[i]
-		local curHP = player.curHP
-		-- if player.isSurrender or curHP <= 0 then
-		-- 	local winPlayerId = self.playerList[i % playerCount + 1].playerId
-		-- 	gBattleResult:SetWinPlayerId(winPlayerId)
-
-		-- 	gBattleManager:AddBattleLog(string.format('Battle End Frame[%d] WinPlayer[%d]', gBattleFrameCount, winPlayerId))
-		-- 	gBattleManager:AddBattleLog('log_end', true)
-		-- 	return true
-		-- end
-	end
-	return false
+	return self.isBattleEnd
 end
 
-function BattleCoopLogic:GenerateMonster( ... )
-	-- 刷新魔法消耗
-	if self.roundNum == 1 then
-		for i = 1, #self.playerList do
-			self.playerList[i]:GenerateCoopMagic(3, true)
-		end
-	end
+function BattleCoopLogic:GenerateMonster( _leftWaveNum, ... )
+	gBattleTimer:StopTask('GenerateMonster')
 
-	local roundDuration = self:GetRoundData(self.roundNum)
-	self.roundDuration = roundDuration
+	local index = self.roundNum > #self.roundList and #self.roundList or self.roundNum
+	local round = self.roundList[index]
+	if round.roundType ~= BattleCoopRoundType.BOSS then
+		-- 普通出怪
+		self.leftWaveNum = _leftWaveNum or #round.monsterOrderList
+		gBattleTimer:RunTask('GenerateMonster', 200, 1000, #round.monsterOrderList, false, function( _index, ... )
+			self.waveNum = _index + self.roundStartWaveNum - 1
+			self.leftWaveNum = self.leftWaveNum - 1
+			-- warn('GenerateMonster', gBattleFrameCount, self.waveNum, _index, self.leftWaveNum, self.roundNum, self.roundStartWaveNum)
+			local monsterType = round.monsterOrderList[_index]
+			local monsterId = self:GetMonsterResId(monsterType)
 
-	for i = MonsterType.NORMAL, MonsterType.ELITE do
-		local monsterType = i
-		local monsterId = self:GetMonsterResId(monsterType)
-		local monsterWaveCount = self:GetMonsterWaveCount(monsterType)
-		local monsterInterval = ToInt(roundDuration / monsterWaveCount)
-		gBattleTimer:RunTask(string.format('GenerateMonster_%d', monsterType), 0, monsterInterval, monsterWaveCount, nil, function( _index, ... )
-			if _index == monsterWaveCount or (monsterType ~= MonsterType.NORMAL and _index == 0) then
-				return
-			end
-			-- 统计总波数
-			if monsterType == MonsterType.NORMAL then
-				self.waveNum = _index + self.roundStartWaveNum
-
-				-- 普通怪物血量
-				local normalMonsterRes = GameResMgr.GetBattleMonsterRes(monsterId)
-				local monsterHPScale = gBattleLogic:GetMonsterHPScale(normalMonsterRes.type) / 100
-				self.monsterHP = ToInt(BattleFormula.GetValue(normalMonsterRes.hpId) * monsterHPScale)
-			end
 			-- 双方各出一个怪物
 			for i = 1, #self.playerList do
 				self.playerList[i]:AddMonster(monsterId)
 			end
-			warn('GenerateNormalMonster', self.roundNum, self.roundStartWaveNum, monsterType, _index, self.waveNum, gBattleTime)
+
+			-- 普通怪物血量
+			self:RefreshMonsterHP()
 		end)
-	end
-
-	-- 随机魔法怪
-	local magicMonsterCount = gBattleRandNum:NextInt(3, 6)
-	local perPeriodTime = self.roundDuration / magicMonsterCount
-	local delayTimeList = {}
-	for i = 1, magicMonsterCount do
-		table_insert(delayTimeList, perPeriodTime * (i - 1) + gBattleRandNum:NextInt(perPeriodTime))
-	end	
-	gBattleTimer:RunQueueTask('GenerateMagicMonster', delayTimeList, 0, 0, function( _index )
-		local monsterType = gBattleRandNum:NextInt(MonsterType.ELITE)
-		local monsterId = self:GetMonsterResId(monsterType)
-		-- 双方各出一个魔法怪
-		for i = 1, #self.playerList do
-			self.playerList[i]:AddMonster(monsterId, nil, true)
-		end
-	end)
-
-	-- 生成BOSS
-	gBattleTimer:RunTask('GenerateBoss', roundDuration, 0, 0, function( ... )
-		-- 标记Boss阶段
-		self.isBossPeriod = true
-		-- 生成Boss
-		for i = 1, #self.playerList do
-			local player = self.playerList[i]
-			-- 添加BOSS
-			player:AddMonster(self:GetMonsterResId(MonsterType.BOSS))
-			-- 清场所有怪物
-			player:RemoveAllMonster(BattleUnitLeaveType.CLEAN, false)
-			-- 重置怪物缓冲数据
-			local pendingData = self.pendingMonsterData[player.playerId]
-			pendingData.monsterCount = 0
-			pendingData.lastMonsterTime = 0
-		end
-	end)
-end
-
-function BattleCoopLogic:OnMonsterDie( _monster, _isKilled, ... )
-	if not self.super:OnMonsterDie(_monster) then
-		return false
-	end
-
-	if _isKilled and _monster.isMagicMonster then
-		_monster.player:GenerateCoopMagic(1)
-	end
-
-	if self.isBossPeriod then
-		for i = 1, #self.playerList do
-			if self.playerList[i]:GetMonsterCount() ~= 0 then
-				return true
-			end
-		end
-		-- 怪物全部死亡，下一阶段
-		self.isBossPeriod = false
-		self.roundNum = self.roundNum + 1
-		self.roundStartWaveNum = self.waveNum + 1
-		self.roundStartTime = gBattleTime
-		self:GenerateMonster()
 	else
-		if _isKilled then
-			-- 对手增加一个小怪
-			local normalMonsterId = self:GetMonsterResId(MonsterType.NORMAL)
-			local player = BattleTarget.GetTargetPlayer(_monster.player, BattlePlayerType.OPPONENT)
-			player = _monster.player
-			local pendingData = self.pendingMonsterData[player.playerId]
-			pendingData.monsterCount = pendingData.monsterCount + 1
-			player.stat:AddPendingMonster(true)
-		end
+		-- Boss
+		self.leftWaveNum = _leftWaveNum or 1
+		local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.PERIOD, 'OnBossEnter', round.bossId)
+		gBattleTimer:RunTask('GenerateMonster', 1200, 0, 0, function( ... )
+			self.isBossPeriod = true
+			self.waveNum = self.roundStartWaveNum
+			self.leftWaveNum = 0
+			-- warn('GenerateMonster', self.waveNum, self.leftWaveNum, gBattleFrameCount)
+			local monsterId = round.bossId
+
+			-- 双方各出一个怪物
+			for i = 1, #self.playerList do
+				self.playerList[i]:AddMonster(monsterId)
+			end
+
+			-- 普通怪物血量
+			self:RefreshMonsterHP()
+		end, false)
 	end
-	return true
 end
 
-function BattleCoopLogic:GetTotalMonsterHP( _player, ... )
-	local totalHP = 0
-	local pendingData = self.pendingMonsterData[_player.playerId]
-	if pendingData.monsterCount > 0 then
-		local normalMonsterId = self:GetMonsterResId(MonsterType.NORMAL)
-		local normalMonsterRes = GameResMgr.GetBattleMonsterRes(normalMonsterId)
-		local monsterHPScale = gBattleLogic:GetMonsterHPScale(normalMonsterRes.type) / 100
-		local monsterHP = ToInt(BattleFormula.GetValue(normalMonsterRes.hpId) * monsterHPScale)
-		totalHP = totalHP + monsterHP * pendingData.monsterCount
-	end
-	local monsterNode = _player.monsterList.first
-	while monsterNode do
-		local monster = monsterNode.value
-		if monster.monsterRes.type ~= MonsterType.BOSS then
-			totalHP = totalHP + monster.curHP
+function BattleCoopLogic:OnMonsterLeave( _monster, _leaveFlags, ... )
+	local needPoint = _leaveFlags[BattleUnitLeaveType.DIE] == 1
+	if needPoint then
+		local point = _monster:GetPoint()
+		for i = 1, #self.playerList do
+			self.playerList[i]:AddPoint(point)
 		end
-		monsterNode = monsterNode.next
 	end
-	return totalHP
-end
-
-function BattleCoopLogic:OnMagicSpell( _player, _magicData, ... )
-	_player:OnCoopMagicSpell(_magicData)
+	-- 漏怪，战斗结束
+	if _leaveFlags[BattleUnitLeaveType.END] == 1 and not self.isLocal then
+		gBattleResult:SetRoundNum(self.roundNum)
+		self.isBattleEnd = true
+	end
+	-- 回合判定
+	if self.leftWaveNum ~= 0 then
+		return
+	end
+	for i = 1, #self.playerList do
+		if self.playerList[i]:GetMonsterCount() ~= 0 then
+			return
+		end
+	end
+	-- 怪物全部死亡，下一阶段
+	self:OnNextRoundStart()
 end
 
 classend()

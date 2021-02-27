@@ -3,14 +3,19 @@
 -- @classmod BattleTriggerAction
 class('BattleTriggerAction')
 
+local math_floor = math.floor
+local os_clock = os.clock
+local FLAGMAP = Utils.BuildFlagMap
+
 ---Constructor
-function BattleTriggerAction:ctor( _battleUnit, _ownerUnit, _actionRes, _triggerRes, _triggerId, ... )
-	self.triggerId = NilDefault(_triggerId, 0)
-	self.battleUnit = NilDefault(_battleUnit, false)
-	self.ownerUnit = NilDefault(_ownerUnit, false)
-	self.actionRes = NilDefault(_actionRes, false)
-	self.triggerRes = NilDefault(_triggerRes, false)
+function BattleTriggerAction:ctor( _battleUnit, _owner, _actionRes, _triggerRes, _triggerId, ... )
+	self.triggerId = _triggerId or 0
+	self.battleUnit = _battleUnit or false
+	self.owner = _owner or false					-- 所有者，{ unitId, player }
+	self.actionRes = _actionRes or false
+	self.triggerRes = _triggerRes or false
 	self.isRemove = false
+	self.node = false
 end
 
 -- 触发行为枚举
@@ -38,17 +43,19 @@ local TriggerActionSwitcher =
 	end,
 	-- 生成塔
 	[BattleActionType.TOWER] = function( self, _triggerParam, _targetUnits, ... )
+		return self:ExecAddTower(_triggerParam, _targetUnits)
 	end,
 	-- 生成怪物
 	[BattleActionType.MONSTER] = function( self, _triggerParam, _targetUnits, ... )
+		return self:ExecAddMonster(_triggerParam, _targetUnits)
 	end,
 	-- 秒杀
 	[BattleActionType.SECKILL] = function( self, _triggerParam, _targetUnits, ... )
 		return self:ExecSecKill(_triggerParam, _targetUnits)
 	end,
 	-- 塔点数
-	[BattleActionType.GUN] = function( self, _triggerParam, _targetUnits, ... )
-		return self:ExecGun(_triggerParam, _targetUnits)
+	[BattleActionType.STAR] = function( self, _triggerParam, _targetUnits, ... )
+		return self:ExecStar(_triggerParam, _targetUnits)
 	end,
 	-- 移除单位
 	[BattleActionType.REMOVEUNIT] = function( self, _triggerParam, _targetUnits, ... )
@@ -73,6 +80,7 @@ local TriggerActionSwitcher =
 }
 
 -- 触发行为
+T_ACTION = 0
 function BattleTriggerAction:FireTrigger( _triggerParam, ... )
 	-- 校验是否有已经缓存战斗帧
 	if self:CheckPendingFrame(_triggerParam) then
@@ -91,6 +99,11 @@ function BattleTriggerAction:FireTrigger( _triggerParam, ... )
 	if switcher then
 		if switcher(self, _triggerParam, targetUnits) then
 			-- 行为执行成功
+			local eventName = self.actionRes.eventName
+			if eventName ~= '' then
+				-- 通知前端单位事件
+				local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.UNITEVENT, self.battleUnit.unitId, eventName)
+			end
 		end
 	end
 	return true
@@ -98,7 +111,7 @@ end
 
 -- 校验触发条件
 function BattleTriggerAction:CheckCondition( _triggerParam, ... )
-	if not self.triggerRes then
+	if not self.triggerRes or self.triggerRes.triggerType == 0 then
 		return true
 	end
 
@@ -144,9 +157,6 @@ local TriggerPlayerSwitcher =
 
 -- 校验触发玩家
 function BattleTriggerAction:CheckTriggerPlayer( _triggerPlayer,  ... )
-	if not self.triggerRes then
-		return true
-	end
 	local triggerPlayerType = self.triggerRes.triggerPlayerType
 	local switcher = TriggerPlayerSwitcher[triggerPlayerType]
 	if switcher then
@@ -157,9 +167,6 @@ end
 
 -- 校验触发单位
 function BattleTriggerAction:CheckTriggerUnit( _triggerUnit, ... )
-	if not self.triggerRes then
-		return true
-	end
 	if self.triggerRes.triggerUnitType == BattleUnitType.ALL then
 		return true
 	end
@@ -181,9 +188,6 @@ local TriggerTargetSwitcher =
 
 -- 校验触发目标关系
 function BattleTriggerAction:CheckTriggerTarget( _triggerUnit, _attackerUnit, ... )
-	if not self.triggerRes then
-		return true
-	end
 	local targetType = self.triggerRes.triggerTargetType
 	local switcher = TriggerTargetSwitcher[targetType]
 	if switcher then
@@ -204,12 +208,12 @@ local TriggerValueSwitcher =
 		if self.triggerRes.value == '0' then
 			return true
 		end
-		local value = ToInt(self.triggerRes.value)
+		local value = tonumber(self.triggerRes.value)
 		if value > 0 then
-			local gunIndex = ToInt(ToInt(_triggerParam.triggerValue) / 100000000)
-			return gunIndex == value
+			local starIndex = _triggerParam.triggerValue.starIndex
+			return starIndex == value
 		end
-		local attackTimes = ToInt(_triggerParam.triggerValue) % 100000000
+		local attackTimes = _triggerParam.triggerValue.attackTimes
 		return attackTimes % (-value) == 0
 	end,
 	-- 额外攻击
@@ -217,21 +221,30 @@ local TriggerValueSwitcher =
 		if self.triggerRes.value == '0' then
 			return true
 		end
-		local value = ToInt(self.triggerRes.value)
+		local value = tonumber(self.triggerRes.value)
 		if value > 0 then
-			local gunIndex = ToInt(ToInt(_triggerParam.triggerValue) / 100000000)
-			return gunIndex == value
+			local starIndex = _triggerParam.triggerValue.starIndex
+			return starIndex == value
 		end
-		local attackTimes = ToInt(_triggerParam.triggerValue) % 100000000
+		local attackTimes = _triggerParam.triggerValue.attackTimes
 		return attackTimes % (-value) == 0
+	end,
+	-- 总星级比较
+	[BattleTriggerType.TOTALSTAR] = function( self, _triggerParam, ... )
+		return _triggerParam.triggerValue == self.triggerRes.value
+	end,
+	-- 离场
+	[BattleTriggerType.LEAVE] = function( self, _triggerParam, ... )
+		local leaveType = tonumber(self.triggerRes.value)
+		if leaveType == BattleUnitLeaveType.ALL then
+			return true
+		end
+		return _triggerParam.triggerValue[leaveType] == 1
 	end
 }
 
 -- 校验触发参数
 function BattleTriggerAction:CheckTriggerValue( _triggerParam, ... )
-	if not self.triggerRes then
-		return true
-	end
 	local triggerType = self.triggerRes.triggerType
 	local switcher = TriggerValueSwitcher[triggerType]
 	if switcher then
@@ -247,7 +260,7 @@ function BattleTriggerAction:CheckTriggerRate( _randNum, ... )
 	end
 	local formulaId = self.triggerRes.triggerRate
 	local triggerRate = BattleFormula.GetValue(formulaId, self.battleUnit, nil)
-	local randNum = FalseDefault(_randNum, gBattleRandNum)
+	local randNum = _randNum or gBattleRandNum
 	return (triggerRate == s_PercentMax or triggerRate == 0 or randNum:NextInt(s_PercentMax) <= triggerRate)
 end
 
@@ -275,7 +288,7 @@ function BattleTriggerAction:ExecDamage( _triggerParam, _targetUnits, ... )
 	if not self:CheckTriggerRate(_triggerParam.randNum) then
 		return false
 	end
-	local formulaId = ToInt(self.actionRes.value)
+	local formulaId = tonumber(self.actionRes.value)
 	local damage = 0
 	if formulaId == 0 then
 		damage = self.battleUnit:GetAttack()
@@ -286,7 +299,7 @@ function BattleTriggerAction:ExecDamage( _triggerParam, _targetUnits, ... )
 		if formulaId ~= 0 then
 			damage = BattleFormula.GetValue(formulaId, self.battleUnit, target, i)
 		end
-		target:OnAttackDamage(self.battleUnit, damage)
+		target:OnAttackDamage(self.battleUnit, damage, nil, self.actionRes.effectId)
 	end
 	return true
 end
@@ -300,7 +313,7 @@ function BattleTriggerAction:ExecExtraDamage( _triggerParam, _targetUnits, ... )
 	if not self:CheckTriggerRate(_triggerParam.randNum) then
 		return false
 	end
-	local formulaId = ToInt(self.actionRes.value)
+	local formulaId = tonumber(self.actionRes.value)
 	local damage = BattleFormula.GetValue(formulaId, self.battleUnit, _targetUnits[1])
 	_triggerParam.extraDamage = _triggerParam.extraDamage + damage
 	return true
@@ -308,14 +321,14 @@ end
 
 -- 增加状态
 function BattleTriggerAction:ExecBuffer( _triggerParam, _targetUnits, ... )
-	local bufferId = ToInt(self.actionRes.value)
+	local bufferId = tonumber(self.actionRes.value)
 	local count = #_targetUnits
 	local isTriggered = false
-	local ownerUnit = self.ownerUnit and self.ownerUnit or self.battleUnit
+	local owner = self.owner and self.owner or self.battleUnit
 	for i = 1, count do
 		-- 校验触发概率
 		if self:CheckTriggerRate(_triggerParam.randNum) then
-			_targetUnits[i]:AddBuffer(bufferId, ownerUnit)
+			_targetUnits[i]:AddBuffer(bufferId, owner)
 			isTriggered = true
 		end
 	end
@@ -325,14 +338,14 @@ end
 -- 移除状态
 function BattleTriggerAction:ExecRemoveBuffer( _triggerParam, _targetUnits, ... )
 	local result = Split(self.actionRes.value, '|')
-	local bufferResId = ToInt(result[1])
-	local layerCount = result[2] and ToInt(result[2]) or 0
+	local bufferResId = tonumber(result[1])
+	local layerCount = result[2] and tonumber(result[2]) or 0
 	local isTriggered = false
-	local ownerUnit = self.ownerUnit and self.ownerUnit or self.battleUnit
+	local owner = self.owner and self.owner or self.battleUnit
 	for i = 1, #_targetUnits do
 		-- 校验触发概率
 		if self:CheckTriggerRate(_triggerParam.randNum) then
-			_targetUnits[i]:RemoveBufferLayer(bufferResId, ownerUnit, layerCount)
+			_targetUnits[i]:RemoveBufferLayer(bufferResId, owner, layerCount)
 			isTriggered = true
 		end
 	end
@@ -342,17 +355,88 @@ end
 -- 生成碰撞体
 function BattleTriggerAction:ExecCollider( _triggerParam, _targetUnits, ... )
 	local result = Split(self.actionRes.value, '|')
-	local colliderResId = ToInt(result[1])
-	local colliderCount = result[2] and ToInt(result[2]) or 1
+	local colliderResId = tonumber(result[1])
+	local colliderCount = result[2] and tonumber(result[2]) or 1
 	local count = #_targetUnits
 	local isTriggered = false
+	local owner = self.owner and self.owner or self.battleUnit
 	for i = 1, count do
 		-- 校验触发概率
 		if self:CheckTriggerRate(_triggerParam.randNum) then
 			for n = 1, colliderCount do
-				_targetUnits[i].player:AddCollider(colliderResId, self.battleUnit.unitId, _triggerParam.triggerUnit)
+				_targetUnits[i].player:AddCollider(colliderResId, owner, _triggerParam.triggerUnit)
 			end
 			isTriggered = true
+		end
+	end
+	return isTriggered
+end
+
+-- 生成怪物
+function BattleTriggerAction:ExecAddMonster( _triggerParam, _targetUnits, ... )
+	local result = Split(self.actionRes.value, '|')
+	local monsterResId = tonumber(result[1])
+	local monsterCount = BattleFormula.GetValue(tonumber(result[2] or 1), self.battleUnit)
+	local maxPosition = tonumber(result[3] or 0)
+	local isTriggered = false
+
+	for i = 1, #_targetUnits do
+		if self:CheckTriggerRate(_triggerParam.randNum) then
+			local player = _targetUnits[i].player
+			for n = 1, monsterCount do
+				local position = maxPosition ~= 0 and gBattleRandNum:NextInt(maxPosition) or 0
+				position = position * BattleConstants.BATTLE_ROAD_LENGTH / Constants.PERCENT_MAX
+				player:AddMonster(monsterResId, nil, position)
+			end
+			isTriggered = true
+		end
+	end
+	return isTriggered
+end
+
+-- 生成塔
+function BattleTriggerAction:ExecAddTower( _triggerParam, _targetUnits, ... )
+	local addType = tonumber(self.actionRes.value)
+	local star = 1
+	local posIndex = 0
+	local towerRes = false
+	local isTriggered = false
+	if addType == BattleTowerAddType.ALL then
+		for i = 1, #_targetUnits do
+			-- 校验触发概率
+			if self:CheckTriggerRate(_triggerParam.randNum) then
+				local player = _targetUnits[i].player
+				posIndex = player:RandomTowerPosIndex(gBattleRandNum)
+				if posIndex ~= 0 then
+					local towerResId = player:RandomTowerResId(gBattleRandNum)
+					towerRes = GameResMgr.GetBattleTowerRes(towerResId)
+					if towerRes then
+						player:AddTowerByFrame(nil, towerRes, star, posIndex, false, BattleTowerAddType.ALL)
+						isTriggered = true
+					end
+				end
+			end
+		end
+	elseif addType == BattleTowerAddType.GROWUP then
+		if _triggerParam.triggerUnit.star == Constants.BATTLE_MAX_STAR then
+			return false
+		end
+		for i = 1, #_targetUnits do
+			-- 校验触发概率
+			if self:CheckTriggerRate(_triggerParam.randNum) then
+				local player = _targetUnits[i].player
+				posIndex = _triggerParam.triggerUnit.posIndex
+				if posIndex ~= 0 then
+					local towerResId = player:RandomTowerResId(gBattleRandNum)
+					towerRes = GameResMgr.GetBattleTowerRes(towerResId)
+					if towerRes then
+						star = _triggerParam.triggerUnit.star + 1
+						player:RemoveTowerByFrame(nil, posIndex, FLAGMAP(BattleUnitLeaveType.GROWUP))
+						player:AddTowerByFrame(nil, towerRes, star, posIndex, false, BattleTowerAddType.GROWUP)
+						isTriggered = true
+					end
+				end
+			end
 		end
 	end
 	return isTriggered
@@ -361,7 +445,7 @@ end
 -- 秒杀
 function BattleTriggerAction:ExecSecKill( _triggerParam, _targetUnits, ... )
 	local isTriggered = false
-	local formulaId = ToInt(self.actionRes.value)
+	local formulaId = tonumber(self.actionRes.value)
 	local secKillRate = BattleFormula.GetValue(formulaId, self.battleUnit, nil)
 	for i = 1, #_targetUnits do
 		-- 校验触发概率
@@ -378,8 +462,8 @@ function BattleTriggerAction:ExecSecKill( _triggerParam, _targetUnits, ... )
 end
 
 -- 塔加减点数
-function BattleTriggerAction:ExecGun( _triggerParam, _targetUnits, ... )
-	local change = ToInt(self.actionRes.value)
+function BattleTriggerAction:ExecStar( _triggerParam, _targetUnits, ... )
+	local change = tonumber(self.actionRes.value)
 	local count = #_targetUnits
 	local isTriggered = false
 	for i = 1, count do
@@ -387,7 +471,7 @@ function BattleTriggerAction:ExecGun( _triggerParam, _targetUnits, ... )
 		if self:CheckTriggerRate(_triggerParam.randNum) then
 			local unit = _targetUnits[i]
 			if unit.unitType == BattleUnitType.TOWER then
-				unit.player:ChangeTowerGun(unit, change, _triggerParam.triggerFrame, _triggerParam.isLogic)
+				unit.player:ChangeTowerStar(unit, change, _triggerParam.triggerFrame, _triggerParam.isLogic)
 				isTriggered = true
 			end
 		end
@@ -397,14 +481,14 @@ end
 
 -- 移除单位
 function BattleTriggerAction:ExecRemoveUnit( _triggerParam, _targetUnits, ... )
-	local leaveType = ToInt(self.actionRes.value)
+	local leaveType = tonumber(self.actionRes.value)
 	local count = #_targetUnits
 	local isTriggered = false
 	for i = 1, count do
 		-- 校验触发概率
 		if self:CheckTriggerRate(_triggerParam.randNum) then
 			local unit = _targetUnits[i]
-			unit.player:RemoveUnit(unit, leaveType)
+			unit.player:RemoveUnit(unit, FLAGMAP(leaveType))
 
 			isTriggered = true
 		end
@@ -414,7 +498,7 @@ end
 
 -- 添加SP
 function BattleTriggerAction:ExecAddPoint( _triggerParam, _targetUnits, ... )
-	local formulaId = ToInt(self.actionRes.value)
+	local formulaId = tonumber(self.actionRes.value)
 	local count = #_targetUnits
 	local isTriggered = false
 	for i = 1, count do
@@ -424,6 +508,9 @@ function BattleTriggerAction:ExecAddPoint( _triggerParam, _targetUnits, ... )
 			local point = BattleFormula.GetValue(formulaId, unit, unit)
 			unit.player:AddPoint(point)
 
+			-- 通知前端添加SP
+			local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.DAMAGE, unit.unitId, point, BattleDamageType.POINT)
+
 			isTriggered = true
 		end
 	end
@@ -432,7 +519,7 @@ end
 
 -- 替换目标
 function BattleTriggerAction:ExecReplaceTarget( _triggerParam, _targetUnits, ... )
-	local targetId = ToInt(self.actionRes.value)
+	local targetId = tonumber(self.actionRes.value)
 	local count = #_targetUnits
 	local isTriggered = false
 	for i = 1, count do
@@ -450,13 +537,13 @@ end
 
 -- 瞬移
 function BattleTriggerAction:ExecTeleport( _triggerParam, _targetUnits, ... )
-	local distance = ToInt(self.actionRes.value)
+	local distance = tonumber(self.actionRes.value)
 	local count = #_targetUnits
 	local isTriggered = false
 	for i = 1, count do
 		local targetMonster = _targetUnits[i]
 		-- 校验触发概率
-		if (distance ~= 0 or not targetMonster:HasUnitFlag(BattleUnitFlag.TELEPORTED)) and self:CheckTriggerRate(_triggerParam.randNum) then
+		if (distance ~= 0 or not targetMonster:HasUnitFlag(BattleUnitFlag.TELEPORTED)) and self:CheckTriggerRate(_triggerParam.randNum) and not targetMonster:CheckAttributeIgnore(AttriType.TELEPORT) then
 			isTriggered = true
 			-- 设置位置
 			local position = distance == 0 and 0 or (targetMonster.position + distance)
@@ -466,7 +553,6 @@ function BattleTriggerAction:ExecTeleport( _triggerParam, _targetUnits, ... )
 			if distance == 0 then
 				targetMonster:AddBuffer(Constants.BATTLE_TELEPORTED_BUFFER, targetMonster)
 			end
-			warn('ExecTeleport', targetMonster.unitId, distance)
 		end
 	end
 	return isTriggered
@@ -474,7 +560,7 @@ end
 
 -- 偷取SP
 function BattleTriggerAction:ExecStealSP( _triggerParam, _targetUnits, ... )
-	local point = ToInt(self.actionRes.value)
+	local point = tonumber(self.actionRes.value)
 	local count = #_targetUnits
 	local isTriggered = false
 	for i = 1, count do

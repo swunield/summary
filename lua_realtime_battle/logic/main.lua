@@ -14,6 +14,7 @@ plugin{
 	
 		importplugin('gameutils')
 		importplugin('gameres')
+		importplugin('model')
 
 		use 'importclass'
 		

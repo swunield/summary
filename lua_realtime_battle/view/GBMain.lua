@@ -25,8 +25,8 @@ local ServerCommandSwitcher = {
 		GBMain.INSTANCE():OnServerFramePackage(_frameCount, _frameList)
 	end,
 	-- 战斗结算
-	[60003] = function( _settle, ... )
-		GBMain.INSTANCE():OnServerBattleSettle(_settle)
+	[60003] = function( _tBattleSettle, ... )
+		GBMain.INSTANCE():OnServerBattleSettle(_tBattleSettle)
 	end
 }
 
@@ -35,7 +35,7 @@ function GBMain.OnServerCommand( _commandId, _data1, _data2, ... )
 		return
 	end
 	if s_instance.blockServerCommand then
-		table_insert(s_instance.serverCommandList, { commandId = _commandId, data1 = _data1, data2 = _data2 })
+		table.insert(s_instance.serverCommandList, { commandId = _commandId, data1 = _data1, data2 = _data2 })
 		return
 	end
 	local cmdExecutor = ServerCommandSwitcher[_commandId]
@@ -56,6 +56,14 @@ function GBMain.BlockServerCommand( _block, ... )
 		end
 		s_instance.serverCommandList = {}
 	end
+end
+
+-- 请求快照
+function GBMain.RequestSnapShot( ... )
+	if not s_instance then
+		return
+	end
+	gamebattle.gBattleManager.isSnapShotTaking = true
 end
 
 ---Constructor
@@ -86,6 +94,10 @@ function GBMain:Finalize( ... )
 	self.gbField = false
 	Global.gGBField = nil
 
+	-- 对象池清理
+	GameObjectPool.AutoClean(true)
+	gGameClient:StartGC()
+
 	GBCommand.Destroy()
 end
 
@@ -112,7 +124,7 @@ end
 
 function GBMain:Update( _deltaTime, _time, ... )
 	-- 战斗逻辑
-	BattleMain.INSTANCE():Update(_deltaTime)
+	local realDeltaTime = BattleMain.INSTANCE():Update(_deltaTime)
 
 	local battleState = gamebattle.gBattleManager.battleState
 	if battleState == BattleState.BATTLEING or battleState == BattleState.PENDING then
@@ -126,6 +138,8 @@ function GBMain:Update( _deltaTime, _time, ... )
 	if not gamebattle.gBattleRecord.isRealTime and gamebattle.gBattleManager.battleFrameCount % 10 == 0 then
 		UIUtils.RefreshUIPage('battle', 'ServerFrame', { ServerFrame = 0, LocalFrame = gamebattle.gBattleManager.battleFrameCount })
 	end
+
+	return realDeltaTime
 end
 
 function GBMain:OnServerFramePackage( _frameCount, _frameList, ... )
@@ -161,6 +175,13 @@ function GBMain:IsPlayerSelf( _playerId, ... )
 	return _playerId == self.playerId
 end
 
+-- 快照
+function GBMain:SendSnapShot( _tSnapShot, ... )
+	GameNetRequest.SendBattleSnapShotRequest(_tSnapShot, function( ... )
+		-- 倒计时
+	end)
+end
+
 -- 投降
 function GBMain:ExecSurrender( ... )
 	local player = gamebattle.gBattleRecord:GetBattlePlayer(self.playerId)
@@ -168,9 +189,9 @@ function GBMain:ExecSurrender( ... )
 		return
 	end
 	local frame = player:GenerateBattleFrame(BattleFrameType.SURRENDER)
-	gamebattle.gBattleRecord:ExecSurrender(self.playerId, frame, player, false)
+	local code = gamebattle.gBattleRecord:ExecSurrender(self.playerId, frame, player, false)
 	-- 通知后端
-	warn('GBMain ExecSurrender', frame.frameId, frame.frameCount)
+	warn('GBMain ExecSurrender', frame.frameId, frame.frameCount, code)
 	GameNetRequest.SendBattleOperationRequest(frame)
 end
 
@@ -178,21 +199,22 @@ end
 function GBMain:ExecRoll( ... )
 	local player = self:GetMyPlayer()
 	if not player then
-		return
+		return false
 	end
 	if not player:IsPointEnough() then
 		gGameDialog:ShowHint('点数不足')
-		return
+		return false
 	end
 	if not player:HasEmptyPos() then
 		gGameDialog:ShowHint('塔满，没有空余位置')
-		return
+		return false
 	end
 	local frame = player:GenerateBattleFrame(BattleFrameType.ROLL)
-	local result, code = gamebattle.gBattleRecord:ExecRoll(self.playerId, frame, player, false)
+	local code = gamebattle.gBattleRecord:ExecRoll(self.playerId, frame, player, false)
 	-- 通知后端
 	warn('GBMain ExecRoll', frame.frameId, frame.frameCount, code)
 	GameNetRequest.SendBattleOperationRequest(frame)
+	return true
 end
 
 -- 合并塔
@@ -206,45 +228,59 @@ function GBMain:ExecMerge( _towerIndex, _targetTowerIndex )
 	if not dragTower or not targetTower then
 		return false
 	end
-	local canMerge, mergeType = dragTower:CanMerge(targetTower)
+	local canMerge, mergeType, mergeUnitFlag = dragTower:CanMerge(targetTower)
 	if not canMerge then
 		return false
 	end
 
-	local param = targetTower.towerRes.id * 100 + dragTower.gunCount * 10 + mergeType
+	local param = targetTower.towerRes.id * 10000 + dragTower.star * 1000 + mergeUnitFlag * 10 + mergeType
 	local frame = gbPlayer.player:GenerateBattleFrame(BattleFrameType.MERGE, _towerIndex, _targetTowerIndex, param)
-	gamebattle.gBattleRecord:ExecMerge(self.playerId, frame, gbPlayer.player, false)
+	local code = gamebattle.gBattleRecord:ExecMerge(self.playerId, frame, gbPlayer.player, false)
 	-- 通知后端
-	warn('GBMain ExecMerge', frame.frameId, _towerIndex, _targetTowerIndex)
+	warn('GBMain ExecMerge', frame.frameId, _towerIndex, _targetTowerIndex, code, mergeType, mergeUnitFlag)
 	GameNetRequest.SendBattleOperationRequest(frame)
 	return true
 end
 
--- 释放魔法
-function GBMain:ExecMagic( _magicIndex, ... )
-	local gbPlayer = self:GetMyGBPlayer()
-	if not gbPlayer then
+-- 升级塔
+function GBMain:ExecUpgrade( _towerPoolIndex, ... )
+	local player = self:GetMyPlayer()
+	if not player then
 		return false
 	end
-	if _magicIndex < 1 or _magicIndex > 6 then
+	local cost = player:GetTowerUpgradeCostByPoolIndex(_towerPoolIndex)
+	if cost == 0 then
+		gGameDialog:ShowHint('塔已满级')
 		return false
 	end
-	if not gbPlayer.player:IsMagicEnable(_magicIndex) then
-		gGameDialog:ShowHint('魔法不可用')
-		return false
-	end
-	local costPoint = gbPlayer.player:GetMagicCostPoint(_magicIndex)
-	if not gbPlayer.player:IsPointEnough(costPoint) then
+	if not player:IsPointEnough(cost) then
 		gGameDialog:ShowHint('点数不足')
 		return false
 	end
-	local frame = gbPlayer.player:GenerateBattleFrame(BattleFrameType.MAGIC, _magicIndex)
-	gamebattle.gBattleRecord:ExecMagic(self.playerId, frame, gbPlayer.player, false)
+	local frame = player:GenerateBattleFrame(BattleFrameType.UPGRADE, _towerPoolIndex)
+	local code = gamebattle.gBattleRecord:ExecUpgrade(self.playerId, frame, player, false)
 	-- 通知后端
-	warn('GBMain ExecMagic', _magicIndex)
+	warn('GBMain ExecUpgrade', frame.frameId, frame.frameCount, code, _towerPoolIndex)
 	GameNetRequest.SendBattleOperationRequest(frame)
-	-- 开始魔法CD
-	UIUtils.RefreshUIPage('battle', 'BeginMagicCD', { magicIndex = _magicIndex })
+	return true
+end
+
+-- 英雄天赋
+function GBMain:ExecHeroTalent( ... )
+	local player = self:GetMyPlayer()
+	if not player then
+		return false
+	end
+	if not player.hero:IsHeroTalentReady() then
+		gGameDialog:ShowHint('魔法冷却中')
+		return false
+	end
+	local frame = player:GenerateBattleFrame(BattleFrameType.HEROTALENT)
+	local code = gamebattle.gBattleRecord:ExecHeroTalent(self.playerId, frame, player, false)
+	-- 通知后端
+	warn('GBMain ExecHeroTalent', frame.frameId, frame.frameCount, code)
+	GameNetRequest.SendBattleOperationRequest(frame)
+	return true
 end
 
 -- 点数刷新
@@ -267,10 +303,14 @@ function GBMain:OnLogicBattleEnd( _result, _battleId, ... )
 end
 
 -- 后端结算
-function GBMain:OnServerBattleSettle( _settle, ... )
+	-- @table _tBattleSettle: TBattleSettle
+function GBMain:OnServerBattleSettle( _tBattleSettle, ... )
 	gamebattle.gBattleManager:ChangeBattleState(BattleState.SETTLE)
-	_settle.lastExp = gUIDataMgr.userData:GetUserExp()
-	UIUtils.ShowPage('battle_settle', 1, nil, _settle)
+	BattleSettlePage.OpenPage(_tBattleSettle)
+end
+
+function GBMain:IsMyPlayer( _playerId, ... )
+	return self.playerId == _playerId
 end
 
 function GBMain:GetMyPlayer( ... )
@@ -288,6 +328,20 @@ end
 function GBMain:GetEnemyGBPlayer( ... )
 	local enemyPlayer = self:GetEnemyPlayer()
 	return gGBField:GetGBPlayer(enemyPlayer.playerId)
+end
+
+function GBMain:RefreshHeroTalentCDTime( _playerId, _pastTime, _leftTime, ... )
+	UIUtils.RefreshUIPage('battle', 'RefreshHeroTalentCDTime', { playerId = _playerId, pastTime = _pastTime, leftTime = _leftTime })
+	return true
+end
+
+function GBMain:OnRoundStart( _duration, _roundNum, ... )
+	UIUtils.RefreshUIPage('battle', 'RoundStart', { duration = _duration, roundNum = _roundNum })
+	return true
+end
+
+function GBMain:OnBattlePeriodUpdate( _periodName, _param1, _param2, ... )
+	UIUtils.RefreshUIPage('battle', _periodName, { param1 = _param1, param2 = _param2, params = ... })
 end
 
 classend()

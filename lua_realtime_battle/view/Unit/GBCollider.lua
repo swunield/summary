@@ -11,15 +11,12 @@ function GBCollider:ctor( ... )
 end
 
 function GBCollider:Destroy( ... )
-	if self.gameObject then
-		GameObjectPool.ReleaseObject(self.gameObject)
+	if self.uBattleUnit then
+		self.uBattleUnit:Stop(true)
 	end
 
 	-- 父类销毁
 	self.super:Destroy()
-
-	-- 销毁当前类声明的变量，尤其是与UnityObject之间的引用
-	self:ClearContent()
 end
 
 function GBCollider:Init( _collider, _gbPlayer, ... )
@@ -27,26 +24,27 @@ function GBCollider:Init( _collider, _gbPlayer, ... )
 		return false
 	end
 
-	local objCollider = GameObjectPool.INSTANCE:Request('battle/battle_collider', true)
-	if not objCollider then
-		return false
-	end
-
-	self.uBattleUnit = UIUtils.GetObjectComponent(objCollider, 'UBattleCollider')
-	self.gameObject = objCollider.gameObject
-	self.transform = objCollider.transform
 	self.collider = _collider
-	self.unit = self.collider
+	self.battleUnit = self.collider
+	self.gbUnit = self
 	self.gbPlayer = _gbPlayer
-	self.uBattleUnit.unitId = self.collider.unitId
 
-	-- 放入战场
-	local objParent = self.collider.colliderRes.zOrderType == EffectZOrderType.TOP and self.gbPlayer.objTopRoad or self.gbPlayer.objBottomRoad
-	GOUtils.SetParent(self.gameObject, objParent, false, -1, -1, -1, string.format('monster_%d', self.collider.colliderId))
+	self:CheckFrameChasing('Init', function( ... )
+		local objCollider = GameObjectPool.INSTANCE:Request(self.collider.colliderRes.prefabName, 'animation/other/prefabs/tower/', true)
+		if not objCollider then
+			return false
+		end
+
+		self.uBattleUnit = UIUtils.GetObjectComponent(objCollider, 'UBattleCollider')
+		self.gameObject = objCollider.gameObject
+		self.transform = objCollider.transform
+		self.uBattleUnit.unitId = self.collider.unitId
+		-- 放入战场
+		GOUtils.SetParent(self.gameObject, self.gbPlayer.objMonsterRoad, false, -1, -1, -1, string.format('collider_%d', self.collider.colliderId))
+	end)
+
 	-- 初始化位置
 	self:SetPosition(self.collider.position)
-
-	UIUtils.SetChildText(self, 'txt', self.collider.colliderRes.name)
 
 	return true
 end
@@ -69,7 +67,9 @@ function GBCollider:SetPosition( _position, ... )
 	end
 	local posX = startPoint.x + (endPoint.x - startPoint.x) * (_position - startPoint.z) / (endPoint.z - startPoint.z)
 	local posY = startPoint.y + (endPoint.y - startPoint.y) * (_position - startPoint.z) / (endPoint.z - startPoint.z)
-	GOUtils.SetLocalPosition(self.gameObject, posX, posY, 1)
+	self:CheckFrameChasing('SetPosition', function( ... )
+		self.uBattleUnit:SetPosition(posX, posY, 1)
+	end)
 end
 
 classend()

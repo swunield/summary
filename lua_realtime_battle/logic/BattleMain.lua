@@ -5,28 +5,32 @@ class('BattleMain')
 
 -- 战斗逻辑入口，战斗开始时实例化且战斗全程唯一，战斗结束时销毁
 local s_instance;
-function BattleMain.INSTANCE( ... )
+function BattleMain.INSTANCE( ... )  
 	if not s_instance then
 		s_instance = BattleMain()
 	end
 	return s_instance
 end
 
-function BattleMain.Destroy( ... )
+function BattleMain.Destroy( ... )  
 	if s_instance then
 		s_instance:Finalize()
 		s_instance = nil
 	end
 end
 
+function BattleMain.SendGBCommand( _cmdType, _cmdData1, _cmdData2, _cmdData3, _cmdData4, _cmdData5, ... )
+	return s_instance:SendCommand(_cmdType, _cmdData1, _cmdData2, _cmdData3, _cmdData4, _cmdData5, ...)
+end
+
 ---Constructor
-function BattleMain:ctor( ... )
+function BattleMain:ctor( ... )  
 	self.randNum = false					-- 战斗随机数
 	self.battleMananger = false 			-- 战斗管理器
 	self.gameCommand = false				-- 游戏显示命令中心
 end
 
-function BattleMain:Finalize( ... )
+function BattleMain:Finalize( ... )  
 	if self.battleMananger then
 		self.battleMananger:Finalize()
 	end
@@ -34,15 +38,18 @@ function BattleMain:Finalize( ... )
 	Global.gBattleManager = nil
 
 	Global.gBattleRandNum = nil
+
+	Global.G_SendGBCommand = nil
 end
 
-function BattleMain:Initialize( _battleRecord, _gameCommand, ... )
+function BattleMain:Initialize( _battleRecord, _gameCommand, ... )  
 	if not _battleRecord then
 		return false
 	end
 
 	-- 连接游戏显示命令中心
 	self.gameCommand = _gameCommand or false
+	Global.G_SendGBCommand = _gameCommand and BattleMain.SendGBCommand or nil
 	
 	-- 初始化战斗随机数
 	self.randNum = RandNum(_battleRecord.battleSeed)
@@ -54,41 +61,37 @@ function BattleMain:Initialize( _battleRecord, _gameCommand, ... )
 	Global.gBattleManager = self.battleMananger
 	gBattleManager:Initialize(_battleRecord)
 
-	-- 公式测试代码
-	-- for i = 1, 200 do
-	-- 	gBattleLogic.waveNum = i
-	-- 	local round = gBattleLogic.roundNum
-	-- 	gBattleLogic.roundNum = ToInt((i - 1) / 10) + 1
-	-- 	if gBattleLogic.roundNum ~= round then
-	-- 		gBattleLogic.roundStartWaveNum = gBattleLogic.waveNum
-	-- 	end
-	-- 	warn(i, BattleFormula.GetValue(200001, false))
-	-- end
-	
+	-- 快照加载，直接开始战斗
+	if gBattleRecord.frameCount > 0 and gBattleRecord.tSnapShot then
+		gBattleManager:BeginBattle()
+	end
+
 	return true
 end
 
 -- 战斗逻辑主循环
-function BattleMain:Update( _deltaTime, ... )
-	if not self.battleMananger then
+function BattleMain:Update( _deltaTime, ... )  
+	if not gBattleManager then
 		return
 	end
 
 	-- 管理器
-	gBattleManager:Update(_deltaTime)
+	local realDeltaTime = gBattleManager:Update(_deltaTime)
+
+	return realDeltaTime
 end
 
 -- 向游戏中发送指令
-function BattleMain:SendGBCommand( _cmdType, _cmdData1, _cmdData2, _cmdData3, _cmdData4, _cmdData5, ... )
+function BattleMain:SendCommand( _cmdType, _cmdData1, _cmdData2, _cmdData3, _cmdData4, _cmdData5, _cmdData6, ... )
 	if self.gameCommand then
-		return self.gameCommand:OnCommand(_cmdType, _cmdData1, _cmdData2, _cmdData3, _cmdData4, _cmdData5, ... )
+		return self.gameCommand:OnCommand(_cmdType, _cmdData1, _cmdData2, _cmdData3, _cmdData4, _cmdData5, _cmdData6, ... )
 	end
 	return false
 end
 
 -- 战斗模拟入口，后端使用
-function BattleMain:SimulateBattle( _battleRecord, ... )
-	local battleRecordTable = String2Table(_battleRecord)
+function BattleMain:SimulateBattle( _battleRecordString, _battleRecordTable, ... )  
+	local battleRecordTable = _battleRecordTable or String2Table(_battleRecordString)
 	if not battleRecordTable then
 		return nil
 	end
@@ -105,9 +108,11 @@ function BattleMain:SimulateBattle( _battleRecord, ... )
 	gBattleManager:BeginBattle()
 
 	-- 驱动战斗帧
+	local time = os.clock()
 	while (gBattleManager.battleState ~= BattleState.END) do
 		self:Update(Constants.BATTLE_FRAME_TIME)
 	end
+	warn('Battle Time', os.clock() - time)
 	
 	-- 返回战斗结果
 	return gBattleResult.instanceContent

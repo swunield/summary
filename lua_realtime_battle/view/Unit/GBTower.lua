@@ -7,61 +7,71 @@ class('GBTower', GBUnit)
 function GBTower:ctor( ... )
 	self.super = Super()
 
+	self.uBattleGrid = false
+
 	self.tower = false 				-- 战斗逻辑塔
 	self.towerRes = false 			-- 塔配置
-	self.gunCount = 0				-- 炮数量
+	self.star = 0				-- 炮数量
 	self.posIndex = 0				-- 塔位置
-	self.objTop = false				-- 顶层节点
-	self.objBottom = false 			-- 底层节点
-
-	self.gunList = {}				-- 发射源
 
 	self.pendingId = 0				-- 缓冲Id
 end
 
 function GBTower:Destroy( ... )
-	if self.uBattleUnit then
-		UIUtils.ReleasePoolContainer(self.uBattleUnit)
-		UIUtils.SetObjectActive(self.uBattleUnit, false)
+	if self.uBattleGrid and self.uBattleUnit then
+		self.uBattleGrid:UnBindTower('OnTowerLeave')
 	end
-
-	-- warn('GBTower Destroy', self.posIndex, self.tower and self.tower.towerId or 0, gamebattle.gBattleManager and gamebattle.gBattleManager:GetBattleFrameCount() or 0)
 
 	-- 父类销毁
 	self.super:Destroy()
 end
 
-function GBTower:Init( _towerRes, _gunCount, _posIndex, _uBattleTower, _gbPlayer, _tower, ... )
-	if not _towerRes or not _uBattleTower or not _gbPlayer then
+local TowerAddEvents = 
+{
+	[BattleTowerAddType.ALL] = 'OnTowerBorn',
+	[BattleTowerAddType.GROWUP] = 'OnTowerGrowUp',
+	[BattleTowerAddType.MERGE] = 'OnTowerMerge',
+	[BattleTowerAddType.REPRODUCE] = 'OnTowerFanyan',
+	[BattleTowerAddType.ROLL] = 'OnTowerBorn',
+	[BattleTowerAddType.FIX] = 'OnTowerFix',
+	[BattleTowerAddType.COPY] = 'OnTowerCopy',
+	[BattleTowerAddType.STARUP] = 'OnTowerMerge',
+	[BattleTowerAddType.STARDOWN] = 'OnTowerMerge',
+	[BattleTowerAddType.EXCHANGE] = 'OnTowerExchange',
+}
+
+function GBTower:Init( _towerRes, _star, _posIndex, _uBattleGrid, _gbPlayer, _tower, _addType, _isPendingOver, ... )
+	if not _towerRes or not _uBattleGrid or not _gbPlayer then
 		return false
 	end
 
-	self.tower = NilDefault(_tower, false)
-	self.unit = self.tower
-	self.towerRes = _towerRes
-	self.gunCount = _gunCount
-	self.posIndex = _posIndex
-	self.uBattleUnit = _uBattleTower
-	self.gameObject = self.uBattleUnit.gameObject
-	self.transform = self.uBattleUnit.transform
-	self.objTop = self.uBattleUnit.objTop
-	self.objBottom = self.uBattleUnit.objBottom
-	self.gbPlayer = _gbPlayer
-
-	UIUtils.SetObjectActive(self.uBattleUnit, true)
-	UIUtils.RefreshPoolContainer(self.uBattleUnit, 'battle/tower', 1, 'tower')
-
-	UIUtils.SetChildText(self.uBattleUnit, 'tower/txt', string.format('%s%d', self.towerRes.name, self.gunCount))
-	local color = NilDefault(BattleConstants.BATTLE_TOWER_COLOR_LIST[_towerRes.name], { 0 , 0, 0 })
-	UIUtils.SetChildColor(self.uBattleUnit, 'tower/frm', Color(color[1] / 255, color[2] / 255, color[3] / 255, 1))
-
-	if self.tower then
-		self.uBattleUnit.unitId = self.tower.unitId
-		-- 添加到单位列表
-		gGBField.allGBUnits[_tower.unitId] = self
+	self.tower = _tower or false
+	self.battleUnit = self.tower
+	self.gbUnit = self
+	if not _isPendingOver then
+		self.towerRes = _towerRes
+		self.star = _star
+		self.posIndex = _posIndex
+		self.uBattleGrid = _uBattleGrid
+		self.gbPlayer = _gbPlayer
 	end
 
-	-- warn('GBTower Init', _posIndex, self.tower and self.tower.towerId or 0, self.gunCount, gamebattle.gBattleManager:GetBattleFrameCount())
+	self:CheckFrameChasing('Init', function( ... )
+		if not _isPendingOver then
+			local addType = _addType or BattleTowerAddType.ALL
+			self.uBattleUnit = self.uBattleGrid:BindTower('animation/other/prefabs/tower/' .. _towerRes.prefabName, TowerAddEvents[addType])
+			self.uBattleUnit:BindGameLoop(gGBField.looper)
+			self.uBattleUnit:SetLevel(_star)
+			self.gameObject = self.uBattleUnit.gameObject
+			self.transform = self.uBattleUnit.transform
+		end
+		if self.tower then
+			self.uBattleGrid.unitId = self.tower.unitId
+			self.uBattleUnit.unitId = self.tower.unitId
+			-- 添加到单位列表
+			gGBField.allGBUnits[_tower.unitId] = self
+		end
+	end)
 
 	return true
 end
@@ -75,32 +85,42 @@ function GBTower:OnPendingOver( _tower, ... )
 	end
 	
 	-- 重新初始化一次，同逻辑塔关联
-	self:Init(_tower.towerRes, _tower.gunCount, _tower.posIndex, self.uBattleUnit, self.gbPlayer, _tower)
+	self:Init(_tower.towerRes, _tower.star, _tower.posIndex, self.uBattleGrid, self.gbPlayer, _tower, true)
 end
 
 function GBTower:CanMerge( _targetTower, ... )
 	if not _targetTower then
-		return false
+		return false, nil, 0
 	end
 	if _targetTower.posIndex == self.posIndex then
-		return false
+		return false, nil, 0
 	end
-	if _targetTower.gunCount ~= self.gunCount then
-		return false
+	if _targetTower.star ~= self.star then
+		return false, nil, 0
 	end
 	if self:CanExchange(_targetTower) then
-		return true, BattleTowerMergeType.EXCHANGE
+		return true, BattleTowerMergeType.EXCHANGE, 0
 	end
 	if self:CanCopy(_targetTower) then
-		return true, BattleTowerMergeType.COPY
+		return true, BattleTowerMergeType.COPY, 0
+	end
+	-- 已满级
+	if self.star == Constants.BATTLE_MAX_STAR then
+		return false, nil, 0
 	end
 	if self:CanFix(_targetTower) then
-		return true, BattleTowerMergeType.FIX
+		return true, BattleTowerMergeType.FIX, 0
 	end
 	if _targetTower.towerRes.id ~= self.towerRes.id and self.towerRes.birthFlag ~= BattleUnitFlag.FIT and _targetTower.towerRes.birthFlag ~= BattleUnitFlag.FIT then
-		return false
+		return false, nil, 0
 	end
-	return true, BattleTowerMergeType.MERGE
+	local mergeUnitFlag = 0
+	if self.towerRes.birthFlag == BattleUnitFlag.REPRODUCE or _targetTower.towerRes.birthFlag == BattleUnitFlag.REPRODUCE then
+		mergeUnitFlag = BattleUnitFlag.REPRODUCE
+	elseif self.towerRes.birthFlag == BattleUnitFlag.SUMMON or _targetTower.towerRes.birthFlag == BattleUnitFlag.SUMMON then
+		mergeUnitFlag = BattleUnitFlag.SUMMON
+	end
+	return true, BattleTowerMergeType.MERGE, mergeUnitFlag
 end
 
 -- 是否可以交换
@@ -108,7 +128,7 @@ function GBTower:CanExchange( _targetTower,  ... )
 	if not _targetTower then
 		return false
 	end
-	if _targetTower.gunCount ~= self.gunCount then
+	if _targetTower.star ~= self.star then
 		return false
 	end
 	if _targetTower.towerRes.id == self.towerRes.id then
@@ -122,7 +142,7 @@ function GBTower:CanCopy( _targetTower, ... )
 	if not _targetTower then
 		return false
 	end
-	if _targetTower.gunCount ~= self.gunCount then
+	if _targetTower.star ~= self.star then
 		return false
 	end
 	if _targetTower.towerRes.id == self.towerRes.id then
@@ -136,29 +156,54 @@ function GBTower:CanFix( _targetTower, ... )
 	if not _targetTower then
 		return false
 	end
-	if _targetTower.gunCount ~= self.gunCount then
+	if _targetTower.star ~= self.star then
+		return false
+	end
+	-- 已满级
+	if self.star == Constants.BATTLE_MAX_STAR then
 		return false
 	end
 	return self.towerRes.birthFlag == BattleUnitFlag.FIX
 end
 
 -- 发射子弹
-function GBTower:FireMissile( _gunIndex, _missile, _fireInterval, ... )
-	if not self.gunList[_gunIndex] then
-		self.gunList[_gunIndex] = {}
+function GBTower:FireMissile( _missile, ... )
+	if not self.uBattleUnit then
+		return
 	end
-	local gbTargetUnit = gGBField:GetGBUnit(_missile.monsterUnitId)
-	if not gbTargetUnit then
+	local gbTargetUnit = gGBField:GetGBUnit(_missile.targetUnitId)
+	if not gbTargetUnit or not gbTargetUnit.uBattleUnit then
 		return
 	end
 
-	local gun = self.gunList[_gunIndex]
-	gun.missile = _missile
-	gun.fireInterval = _fireInterval
-	gun.nextFireTime = gGBField.gbTime + _fireInterval
-	gGBField:AddGBEffect(nil, self.gbPlayer, _missile.effectId, self, gbTargetUnit, function( _isHit, ... )
+	-- 自动转向
+	self.uBattleUnit:Fire(_missile.starIndex, gbTargetUnit.uBattleUnit, 'OnFire')
+	-- 添加特效
+	local duration = (_missile.hitFrame - gamebattle.gBattleFrameCount) * Constants.BATTLE_FRAME_TIME
+	gGBField:AddGBEffect(nil, self.gbPlayer, _missile.effectId, self, gbTargetUnit, duration, function( _isHit, ... )
 
 	end)
+end
+
+function GBTower:ShowCover( _isShow, _eventName, ... )
+	if not self.uBattleUnit then
+		return
+	end
+	local isShow = NilDefault(_isShow, true)
+	self.uBattleGrid:ShowCover(isShow, _eventName)
+end
+
+function GBTower:UpdateTimeScale( _timeScale, ... )
+	self:CheckFrameChasing('UpdateTimeScale', function( ... )
+		if not self.uBattleUnit then
+			return
+		end
+		self.uBattleUnit:SetTimeScale(_timeScale)
+	end)
+end
+
+function GBTower:OnTowerUpgrade( ... )
+	self.uBattleGrid:FireUnitEvent('OnTowerLevelUp')
 end
 
 classend()
