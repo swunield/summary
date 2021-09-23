@@ -1,7 +1,7 @@
 ---
 --- class BattleBufferLayer
 -- @classmod BattleBufferLayer
-class('BattleBufferLayer')
+BattleBufferLayer = xclass('BattleBufferLayer')
 
 local table_insert = table.insert
 local TSBufferLayerValue = gModel.TSBufferLayerValue
@@ -12,14 +12,16 @@ function BattleBufferLayer:ctor( _buffer, _time, _owner, _bindGrade, ... )
 	self.buffer = _buffer
 	self.time = _time or false 										-- 添加时间
 	self.valueList = false											-- 数值列表
-	self.owner = _owner or {} 										-- 所有者，{ unitId, player }
+	self.owner = _owner or {} 										-- 所有者，{ unitId, player, star }
 	self.bindGrade = _bindGrade or false							-- 绑定升阶
+	self.star = _owner and _owner.star or 0							-- 星级
 end
 
 function BattleBufferLayer:Serialize( ... )
 	local tLayer = TSBufferLayer:new{}
 	tLayer.StartTime = self.time
 	tLayer.OwnerId = self.owner.unitId
+	tLayer.Star = self.star ~= 0 and self.star or nil
 	for i = 1, #self.valueList do
 		local value = self.valueList[i]
 		if value.value ~= 0 then
@@ -43,6 +45,8 @@ function BattleBufferLayer:DeSerialize( _tLayer, ... )
 	end
 	self.time = _tLayer.StartTime
 	self.owner.unitId = _tLayer.OwnerId
+	self.owner.star = _tLayer.Star or 0
+	self.star = _tLayer.Star or 0
 	self.valueList = {}
 	self.bindGrade = false
 	if _tLayer.ValueList then
@@ -69,4 +73,18 @@ function BattleBufferLayer:IsTargetBetter( _targetValueList )
 	return false
 end
 
-classend()
+function BattleBufferLayer:GetGrade( ... )
+	local player = self.buffer.owner.player
+	if player then
+		return player:GetTowerGradeByBaseId(self.buffer.bufferRes.towerId)
+	end
+	return 0
+end
+
+function BattleBufferLayer:GetLevel( ... )
+	local player = self.buffer.owner.player
+	if player then
+		return player:GetTowerLevelByBaseId(self.buffer.bufferRes.towerId)
+	end
+	return 0
+end

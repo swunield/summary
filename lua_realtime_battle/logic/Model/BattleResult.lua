@@ -10,6 +10,12 @@ function BattleResult:ctor( ... )
 	self.roundNum = 0				-- 回合数 
 end
 
+function BattleResult:Load( _tResult, ... )
+	self.winPlayerId = _tResult.WinPlayerId or 0
+	self.frameCount = _tResult.FrameCount or 0
+	self.roundNum = _tResult.RoundNum or 0
+end
+
 function BattleResult:SetWinPlayerId( _playerId, ... )
 	self.winPlayerId = _playerId
 end

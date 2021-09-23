@@ -2,14 +2,17 @@
 --- class BattlePlayer
 -- @classmod BattlePlayer
 -- 玩家
-class('BattlePlayer', BattleUnit)
+BattlePlayer = xclass('BattlePlayer', BattleUnit)
 
 local table_insert = table.insert
 local table_remove = table.remove
 local math_floor = math.floor
+local math_ceil = math.ceil
 local os_clock = os.clock
 local BattleTriggerParam_New = BattleTriggerParam.New
+local BattleTriggerParam_Destroy = BattleTriggerParam.Destroy
 local BattleMissile_New = BattleMissile.New
+local BattleMissile_Destroy = BattleMissile.Destroy
 local LMLinkList = plugins.gameutils.LMLinkList
 local LMLinkNode = plugins.gameutils.LMLinkNode
 local LMLinkList_New = LMLinkList.New
@@ -22,15 +25,21 @@ local FLAGMAP = Utils.BuildFlagMap
 
 local TSPlayer = gModel.TSPlayer
 local TSRandom = gModel.TSRandom
+local TS2Int = gModel.TS2Int
+local TS3Int = gModel.TS3Int
+
+local SortMonster = false
+local EncodePosList = false
 
 ---Constructor
 function BattlePlayer:ctor( _isCoop, ... )  
-	self.super = Super( ... )
 	self.super.unitType = BattleUnitType.PLAYER
 
 	-- 序列化数据
 	self.playerId = false 							-- 玩家Id
+	self.playerIndex = 0							-- 玩家索引
 	self.playerSeed = false 						-- 玩家种子，用于抽卡、选卡、合成随机
+	self.fieldId = 0								-- 战场背景Id
 	self.towerPool = {} 							-- 玩家塔池
 	self.hero = false								-- 玩家英雄
 	self.serverId = false 							-- 玩家服务器Id
@@ -43,7 +52,8 @@ function BattlePlayer:ctor( _isCoop, ... )
 
 	-- 运行时数据
 	self.playerIndex = 0							-- 玩家索引
-	self.towerGradeList = {}						-- 玩家塔阶级列表
+	self.towerInfoList = {}							-- 玩家塔信息列表
+	self.towerBaseInfoList = {}						-- 玩家塔基础Id信息
 	self.randNum = false							-- 玩家随机数，独立种子，用于抽卡、合成、塔位置等运算
 	self.idGenterator = {0, 0, 0, 0, 0, 0}			-- id生成器
 	self.frameIdGenerator = 0						-- 帧Id生成器
@@ -60,10 +70,12 @@ function BattlePlayer:ctor( _isCoop, ... )
 	self.monsterList = {}							-- 怪物列表，不排序链表
 	self.monsterSortList = {}						-- 怪物临时列表，自动排序链表
 	self.colliderList = {}							-- 碰撞体列表，链表
-	self.emptyPosList = {}							-- 空位置列表
+	self.posList = {}								-- 空位置列表
+	self.emptyPosCount = 0							-- 空格子数量
 	self.maxHPMonster = false						-- 最大血量怪物
 	self.minHPMonster = false						-- 最小血量怪物
 	self.missileList = {}							-- 子弹列表
+	self.skillList = {}								-- 技能列表
 
 	self.isConnectDirty = false						-- 连接池是否脏
 
@@ -73,7 +85,7 @@ function BattlePlayer:ctor( _isCoop, ... )
 	self.playerAI = false							-- 玩家AI
 
 	self.totalStar = 0								-- 总星级
-	self.isTotalStarDiry = false					-- 总星级标记						
+	self.isTotalStarDirty = false					-- 总星级标记						
 end
 
 function BattlePlayer:Serialize( ... )
@@ -84,16 +96,16 @@ function BattlePlayer:Serialize( ... )
 	tPlayer.CurHP = self.curHP
 	tPlayer.TowerGradeList = {}
 	for i = 1, #self.towerPool do
-		table_insert(tPlayer.TowerGradeList, self.towerGradeList[self.towerPool[i]].grade)
+		table_insert(tPlayer.TowerGradeList, self.towerInfoList[self.towerPool[i]].grade)
 	end
 	tPlayer.GridList = {}
 	for i = 1, #self.gridList do
 		local grid = self.gridList[i]
 		table_insert(tPlayer.GridList, grid:Serialize())
 	end
-	tPlayer.EmptyPosList = {}
-	for i = 1, #self.emptyPosList do
-		table_insert(tPlayer.EmptyPosList, self.emptyPosList[i])
+	tPlayer.PosList = {}
+	for i = 1, #self.posList do
+		tPlayer.PosList[i] = self.posList[i]
 	end
 	tPlayer.MonsterList = {}
 	for i = 1, #self.monsterList do
@@ -130,6 +142,25 @@ function BattlePlayer:Serialize( ... )
 	if self.playerAI then
 		tPlayer.PlayerAI = self.playerAI:Serialize()
 	end
+	-- 技能
+	tPlayer.SkillList = {}
+	for i = 1, #self.skillList do
+		local tSkill = self.skillList[i]:Serialize()
+		if tSkill then
+			table_insert(tPlayer.SkillList, tSkill)
+		end
+	end
+	-- 参数列表
+	for paramType, param in pairs(self.paramMap) do
+		if not tPlayer.ParamList then
+			tPlayer.ParamList = {}
+		end
+		local tValue = TS3Int:new{}
+		tValue.Arg0 = paramType
+		tValue.Arg1 = param.value ~= 0 and param.value or nil
+		tValue.Arg2 = param.nextValue ~= 0 and param.nextValue or nil
+		table_insert(tPlayer.ParamList, tValue)
+	end
 
 	return tPlayer
 end
@@ -144,14 +175,15 @@ function BattlePlayer:DeSerialize( _tPlayer, _index, ... )
 	self.costPoint = _tPlayer.CostPoint
 	self.curHP = _tPlayer.CurHP
 	for i = 1, #self.towerPool do
-		local towerGrade = self.towerGradeList[self.towerPool[i]]
-		towerGrade.grade = _tPlayer.TowerGradeList[i]
-		towerGrade.cost = Constants.BATTLE_GRADE_COST[towerGrade.grade]
-		towerGrade.localGrade = towerGrade.grade
-		if self.playerAI and towerGrade.grade > 1 then
-			self.playerAI:OnTowerUpgrade(self.towerPool[i], towerGrade.grade)
+		local towerInfo = self.towerInfoList[self.towerPool[i]]
+		towerInfo.grade = _tPlayer.TowerGradeList[i]
+		towerInfo.cost = Constants.BATTLE_GRADE_COST[towerInfo.grade]
+		towerInfo.localGrade = towerInfo.grade
+		if self.playerAI and towerInfo.grade > 1 then
+			self.playerAI:OnTowerUpgrade(self.towerPool[i], towerInfo.grade)
 		end
 	end
+	self.totalStar = 0
 	for i = 1, #self.gridList do
 		local grid = self.gridList[i]
 		grid:DeSerialize(_tPlayer.GridList[i], self, i)
@@ -163,9 +195,13 @@ function BattlePlayer:DeSerialize( _tPlayer, _index, ... )
 			end
 		end
 	end
-	self.emptyPosList = {}
-	for i = 1, #_tPlayer.EmptyPosList do
-		table_insert(self.emptyPosList, _tPlayer.EmptyPosList[i])
+	self.posList = {}
+	self.emptyPosCount = 0
+	for i = 1, #_tPlayer.PosList do
+		self.posList[i] = _tPlayer.PosList[i]
+		if self.posList[i] == 0 then
+			self.emptyPosCount = self.emptyPosCount + 1
+		end
 	end
 	self.monsterList = {}
 	for i = 1, #_tPlayer.MonsterList do
@@ -201,43 +237,77 @@ function BattlePlayer:DeSerialize( _tPlayer, _index, ... )
 	if self.playerAI then
 		self.playerAI:DeSerialize(_tPlayer.PlayerAI)
 	end
+	-- 技能
+	self.skillList = {}
+	for i = 1, #_tPlayer.SkillList do
+		local tSkill = _tPlayer.SkillList[i]
+		local skill = BattleSkill.Create(tSkill.Type)
+		skill:DeSerialize(tSkill)
+		table_insert(self.skillList, skill)
+	end
+	-- 参数列表
+	if _tPlayer.ParamList then
+		for i = 1, #_tPlayer.ParamList do
+			local tValue = _tPlayer.ParamList[i]
+			local param = self.paramMap[tValue.Arg0]
+			param.value = tValue.Arg1 or 0
+			param.nextValue = tValue.Arg2 or 0
+			if (param.default.notifyParam and param.value ~= param.nextValue) or param.nextValue == 1 then
+				self.isParamDirty = true
+			end
+		end
+	end
 
 	gBattleManager:RegisterSnapShotPushEndEvent(function( ... )
 		-- 通知前端更新点数，更新血量
 		local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.POINT, self.playerId, self.point, self.costPoint)
-		_ = G_SendGBCommand and G_SendGBCommand(GBCommandType.PLAYERHP, self.playerId, self.curHP, self.maxHP, false)-- 通知前端升级
+		_ = G_SendGBCommand and G_SendGBCommand(GBCommandType.PLAYERHP, self.playerId, self.curHP, self.maxHP, false)
 		_ = G_SendGBCommand and G_SendGBCommand(GBCommandType.UPGRADE, self.playerId)
+		self:NotifyPlayerParam()
 	end)
 end
 
-function BattlePlayer:Load( _tPlayer, ... )  
+function BattlePlayer:Load( _tPlayer, _index, ... )  
 	if not _tPlayer then
 		return
 	end
 
 	self.playerId = _tPlayer.PlayerId
+	self.playerIndex = _index
 	self.playerSeed = _tPlayer.PlayerSeed
+	self.playerName = _tPlayer.PlayerName
+	self.playerLevel = _tPlayer.PlayerLevel
+	self.fieldId = _tPlayer.FieldId or 0
 	self.towerPool = {}
 	for i = 1, #_tPlayer.TowerPool do
-		local towerResId = _tPlayer.TowerPool[i]
+		local towerResId, awakenIndex, awakenLevel = DecodeAwaken(_tPlayer.TowerPool[i])
 		local towerRes = GameResMgr.GetBattleTowerRes(towerResId)
 		if towerRes then
 			table_insert(self.towerPool, towerResId)
-			self.towerGradeList[towerResId] = {
+			local towerInfo = {
 				grade = 1,
+				level = towerRes.level,
 				cost = Constants.BATTLE_GRADE_COST[1],
 				localGrade = 1,
-				bufferLayerList = nil
+				bufferLayerList = nil,
+				poolIndex = i,
+				awakenTalentId = GameResMgr.GetAwakenTalentId(towerRes, awakenIndex, awakenLevel),
+				awakenIndex = awakenIndex,
+				awakenLevel = awakenLevel
 			}
+			self.towerInfoList[towerResId] = towerInfo
+			self.towerBaseInfoList[towerRes.baseId] = towerInfo
+			self:InitParam(towerRes.paramList) 
 		end
 	end
 	self.criticalScale = _tPlayer.CriticalScale or 0
+	local tPlayerAI = _tPlayer.PlayerAI
 	self.hero = BattleHero()
-	self.hero:Load(_tPlayer.Hero)
+	self.hero:Load(_tPlayer.Hero, tPlayerAI and tPlayerAI.HeroFactor)
 	self.playerFrame = BattlePlayerFrame()
 	self.playerFrame:Load(_tPlayer.PlayerFrame)
-	if _tPlayer.PlayerAI then
-		self.playerAI = BattlePlayerAI(_tPlayer.PlayerAI)
+	if tPlayerAI then
+		self.playerAI = BattlePlayerAI(tPlayerAI)
 	end
 end
 
@@ -267,17 +337,18 @@ function BattlePlayer:Init( _index, ... )
 	self.player = self
 	self.unit = self
 	self.opponent = gBattleRecord.playerList[_index % 2 + 1]
-	self.unitId = self:GenerateUnitId(self.playerId)
+	self.unitId = self:GenerateUnitId(0)
 	self.playerIndex = _index
-	self.point = BattleConstants.BATTLE_INIT_POINT
-	self.costPoint = BattleConstants.BATTLE_COST_POINT_STEP
+	self.point = Constants.BATTLE_INIT_POINT
+	self.costPoint = Constants.BATTLE_COST_POINT_STEP
 	self.maxHP = BattleConstants.BATTLE_PLAYER_TOTAL_HP
 	self.curHP = BattleConstants.BATTLE_PLAYER_TOTAL_HP
 
 	-- 初始化塔列表
+	self.emptyPosCount = BattleConstants.BATTLE_MAX_TOWER
 	for i = 1, BattleConstants.BATTLE_MAX_TOWER do
 		self.towerList[i] = false
-		self.emptyPosList[i] = i
+		self.posList[i] = 0
 
 		-- 格子
 		self.gridList[i] = BattleGrid()
@@ -293,7 +364,7 @@ function BattlePlayer:Init( _index, ... )
 	self.missileList = {}
 
 	-- 初始化英雄
-	self.hero:Init(self)
+	self:InitHero()
 
 	-- 初始化AI
 	if self.playerAI then
@@ -301,7 +372,7 @@ function BattlePlayer:Init( _index, ... )
 	end
 
 	-- 父类初始化
-	self.super:Init()
+	self.super:Init(true)
 
 	-- 通知前端添加玩家，更新点数，更新血量
 	local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.ADDPLAYER, self.playerId)
@@ -309,12 +380,31 @@ function BattlePlayer:Init( _index, ... )
 	_ = G_SendGBCommand and G_SendGBCommand(GBCommandType.PLAYERHP, self.playerId, self.curHP, self.maxHP, true)
 end
 
+
+-- 初始化英雄
+function BattlePlayer:InitHero( ... )
+	self.hero:Init(self)
+
+	-- 初始化参数列表
+	local paramType = self.hero.heroRes.param
+	if paramType ~= 0 then
+		self:InitParam({ paramType }) 
+	end
+end
+
 T_TOWER = 0
 T_MONSTER = 0
 
-function BattlePlayer:Update( _deltaTime, ... )  
-	-- 父类更新
-	self.super:Update(_deltaTime, ...)
+function BattlePlayer:Update( _deltaTime, _battleTime, ... )  
+	-- 更新状态
+	local carryBufferList = self.carryBufferList
+	local bufferCount = #carryBufferList
+	for i = bufferCount, 1, -1 do
+		local buffer = carryBufferList[i]
+		if buffer then
+			buffer:Update(_deltaTime)
+		end
+	end
 	-- 连接池
 	if self.isConnectDirty then
 		self:RefreshTowerConnect()
@@ -346,6 +436,14 @@ function BattlePlayer:Update( _deltaTime, ... )
 	end
 	-- 子弹
 	self:UpdateMissile()
+	-- 技能
+	local skillList = self.skillList
+	for i = #skillList, 1, -1 do
+		if not skillList[i]:Update(_deltaTime) then
+			skillList[i]:Destroy()
+			table_remove(skillList, i)
+		end
+	end
 	-- 碰撞
 	local colliderNode = self.colliderList.first
 	while colliderNode do
@@ -354,10 +452,15 @@ function BattlePlayer:Update( _deltaTime, ... )
 	end
 	-- AI更新
 	if self.playerAI then
-		self.playerAI:Update()
+		self.playerAI:Update(_battleTime)
 	end
+end
+
+function BattlePlayer:LateUpdate( ... )
 	-- 刷新总星级
 	self:UpdateTotalStar()
+	-- 刷新参数
+	self:UpdateParam()
 end
 
 function BattlePlayer:GetNextFrame( _moveToNext, ... )
@@ -396,7 +499,7 @@ function BattlePlayer:GenerateId( _unitType, ... )
 	return id
 end
 
-function BattlePlayer:GenerateTowerId( ... )
+function BattlePlayer:GenerateTowerId( ... ) 
 	return self:GenerateId(BattleUnitType.TOWER)
 end
 
@@ -462,9 +565,13 @@ function BattlePlayer:ExecUpgrade( _frame, _isRealTime, _isLogic, ... )
 		return ErrorCode.FRAME_INVALID
 	end
 	local isLogic = _isLogic == nil and true or _isLogic
-	local needPending = not isLogic
-	local isPended = self:CheckPendingFrame(_frame, needPending)
-	if isPended then
+	-- local needPending = not isLogic
+	-- local isPended = self:CheckPendingFrame(_frame, needPending)
+	-- if isPended then
+	-- 	return ErrorCode.SUCCESS
+	-- end
+	self:AddPenddingFrame(_frame, _isRealTime, false, isLogic)
+	if not isLogic then
 		return ErrorCode.SUCCESS
 	end
 
@@ -475,7 +582,7 @@ function BattlePlayer:ExecUpgrade( _frame, _isRealTime, _isLogic, ... )
 	end
 	-- 校验点数是否充足
 	if not self:IsPointEnough(cost) then
-		error(string.format('Exec Upgrade Not Enough %d %d %d', self.playerId, self.point, cost))
+		warn(string.format('Exec Upgrade Not Enough %d %d %d', self.playerId, self.point, cost))
 		return ErrorCode.UPGRADE_POINTNOTENOUGH
 	end
 
@@ -505,16 +612,20 @@ function BattlePlayer:ExecRoll( _frame, _isRealTime, _isLogic, ... )
 	end
 	
 	local isLogic = _isLogic == nil and true or _isLogic
-	local needPending = not isLogic
 	-- warn('ExecRoll', gBattleFrameCount, _frame.frameCount, self.playerId, isLogic, self.point, self.costPoint, self.randNum:GetPoolNum(), self.randNum:GetCount())
-	local isPended = self:CheckPendingFrame(_frame, needPending)
-	if isPended then
+	-- local needPending = not isLogic
+	-- local isPended = self:CheckPendingFrame(_frame, needPending)
+	-- if isPended then
+	-- 	return ErrorCode.SUCCESS
+	-- end
+	self:AddPenddingFrame(_frame, _isRealTime, false, isLogic)
+	if not isLogic then
 		return ErrorCode.SUCCESS
 	end
 	
 	-- 校验点数是否充足
 	if not self:IsPointEnough() then
-		error(string.format('Exec Roll Point Not Enough %d %d %d', self.playerId, self.point, self.costPoint))
+		warn(string.format('Exec Roll Point Not Enough %d %d %d', self.playerId, self.point, self.costPoint))
 		return ErrorCode.ROLL_POINTNOTENOUGH
 	end
 	
@@ -523,7 +634,7 @@ function BattlePlayer:ExecRoll( _frame, _isRealTime, _isLogic, ... )
 	if posIndex == 0 then
 		return ErrorCode.ROLL_FULLGRID
 	end
-	
+
 	-- 随机塔类型
 	local towerResId = self:RandomTowerResId()
 	local towerRes = GameResMgr.GetBattleTowerRes(towerResId)
@@ -533,7 +644,7 @@ function BattlePlayer:ExecRoll( _frame, _isRealTime, _isLogic, ... )
 
 	-- 消耗点数
 	self:ConsumePoint()
-	-- warn('ConsumePoint Roll', self.playerId, self.costPoint - BattleConstants.BATTLE_COST_POINT_STEP, self.point)
+	-- warn('ConsumePoint Roll', self.playerId, self.costPoint - Constants.BATTLE_COST_POINT_STEP, self.point)
 
 	-- 尝试添加缓冲帧
 	self:AddPenddingFrame(_frame, _isRealTime, needPending, isLogic)
@@ -549,6 +660,16 @@ function BattlePlayer:ExecRoll( _frame, _isRealTime, _isLogic, ... )
 	return ErrorCode.SUCCESS
 end
 
+local MergeLeaveFlags = {
+	[BattleUnitFlag.SUMMON] = BattleUnitLeaveType.SUMMON,
+	[BattleUnitFlag.KILL] = BattleUnitLeaveType.KILL,
+	[BattleUnitFlag.HACKER] = BattleUnitLeaveType.HACKER,
+}
+
+local MergeAddFlags = {
+	[BattleUnitFlag.KILL] = BattleTowerAddType.KILL,
+}
+
 -- 合并事件
 local MergeSwitcher = {
 	-- 普通合成
@@ -559,29 +680,48 @@ local MergeSwitcher = {
 		if not towerRes then
 			return ErrorCode.MERGE_TOWERRESINVALID
 		end
-		local dragTowerLeaveFlags = FLAGMAP(BattleUnitLeaveType.MERGE)
-		local targetTowerLeaveFlags = FLAGMAP(BattleUnitLeaveType.MERGED)
-		if _mergeUnitFlag == BattleUnitFlag.SUMMON then
+		local dragTowerLeaveFlags = FLAGMAP(BattleUnitLeaveType.MERGE, 1, BattleUnitLeaveType.POSINDEX, _targetTowerIndex)
+		local targetTowerLeaveFlags = FLAGMAP(BattleUnitLeaveType.MERGED, 1, BattleUnitLeaveType.POSINDEX, _targetTowerIndex)
+		local mergeLeaveFlag = MergeLeaveFlags[_mergeUnitFlag]
+		if mergeLeaveFlag then
 			-- 召唤
 			local dragTower = self:GetTowerByPos(_dragTowerIndex)
 			local targetTower = self:GetTowerByPos(_targetTowerIndex)
-			if dragTower.towerRes.birthFlag == BattleUnitFlag.SUMMON then
-				dragTowerLeaveFlags[BattleUnitLeaveType.SUMMON] = 1
+			if dragTower.towerRes.birthFlag == _mergeUnitFlag then
+				dragTowerLeaveFlags[mergeLeaveFlag] = 1
 			else
-				targetTowerLeaveFlags[BattleUnitLeaveType.SUMMON] = 1
+				targetTowerLeaveFlags[mergeLeaveFlag] = 1
 			end
 		end
+
+		-- 触发合成
+		local triggerParam = BattleTriggerParam_New(self)
+		gBattleTrigger:FireTrigger(BattleTriggerType.MERGE, triggerParam)
+		local extraStar = triggerParam.extraStar
+		BattleTriggerParam_Destroy(triggerParam)
+
+		-- 额外星级处理
+		if extraStar + star > Constants.BATTLE_MAX_STAR then
+			extraStar = Constants.BATTLE_MAX_STAR - star
+		end
+		star = star + extraStar
+
 		-- 尝试添加缓冲帧
 		self:AddPenddingFrame(_frame, _isRealTime, _needPending, _isLogic)
 		-- 通知前端移除塔，并缓存移除塔行为至逻辑帧
 		self:RemoveTowerByFrame(_frame, _dragTowerIndex, dragTowerLeaveFlags)
 		self:RemoveTowerByFrame(_frame, _targetTowerIndex, targetTowerLeaveFlags)
 		-- 通知前端添加塔，并缓存添加塔行为至逻辑帧
-		self:AddTowerByFrame(_frame, towerRes, star, _targetTowerIndex, false, BattleTowerAddType.MERGE)
-		-- 繁衍
+		self:AddTowerByFrame(_frame, towerRes, star, _targetTowerIndex, false, MergeAddFlags[_mergeUnitFlag] or BattleTowerAddType.MERGE, extraStar > 0)
+		
 		if _mergeUnitFlag == BattleUnitFlag.REPRODUCE then
+			-- 繁衍
 			self:ReproduceTower(_frame, _star)
+		elseif _mergeUnitFlag == BattleUnitFlag.COMBO then
+			-- 连接
+			self:AddParamValue(BattleParamType.COMBO, 1)
 		end
+		
 		-- 战斗逻辑调用，立即通知缓存帧生效
 		if _isLogic then
 			_frame:OnPendingOver()
@@ -641,6 +781,31 @@ local MergeSwitcher = {
 		end
 		return ErrorCode.SUCCESS
 	end,
+	-- 重构
+	[BattleTowerMergeType.REBUILD] = function( self, _frame, _isRealTime, _isLogic, _needPending, _dragTowerIndex, _targetTowerIndex, _star, _targetTowerResId, ... )
+		local star = _star
+		local towerResId = self:RandomTowerResId(nil, _targetTowerResId)
+		local towerRes = GameResMgr.GetBattleTowerRes(towerResId)
+		if not towerRes then
+			return ErrorCode.MERGE_TOWERRESINVALID
+		end
+		-- 尝试添加缓冲帧
+		self:AddPenddingFrame(_frame, _isRealTime, _needPending, _isLogic)
+		-- 通知前端移除塔，并缓存移除塔行为至逻辑帧
+		self:RemoveTowerByFrame(_frame, _targetTowerIndex, FLAGMAP(BattleUnitLeaveType.MERGED))
+		-- 通知前端添加塔，并缓存添加塔行为至逻辑帧
+		self:AddTowerByFrame(_frame, towerRes, star, _targetTowerIndex, false, BattleTowerAddType.REBUILD)
+		-- 源塔重新触发进场
+		local dragTower = self:GetTowerByPos(_dragTowerIndex)
+		if dragTower then
+			dragTower:Enter()
+		end
+		-- 战斗逻辑调用，立即通知缓存帧生效
+		if _isLogic then
+			_frame:OnPendingOver()
+		end
+		return ErrorCode.SUCCESS
+	end
 }
 
 -- 繁衍
@@ -665,9 +830,13 @@ function BattlePlayer:ExecMerge( _frame, _isRealTime, _isLogic, ... )
 	end
 
 	local isLogic = _isLogic == nil and true or _isLogic
-	local needPending = not isLogic
-	local isPended = self:CheckPendingFrame(_frame, needPending)
-	if isPended then
+	-- local needPending = not isLogic
+	-- local isPended = self:CheckPendingFrame(_frame, needPending)
+	-- if isPended then
+	-- 	return ErrorCode.SUCCESS
+	-- end
+	self:AddPenddingFrame(_frame, _isRealTime, false, isLogic)
+	if not isLogic then
 		return ErrorCode.SUCCESS
 	end
 
@@ -687,7 +856,7 @@ function BattlePlayer:ExecMerge( _frame, _isRealTime, _isLogic, ... )
 			return ErrorCode.MERGE_TOWERINVALID
 		end
 		local canMerge, logicMergeType, logicMergeUnitFlag = dragTower:CanMerge(targetTower)
-		-- gBattleManager:AddBattleLog(string.format('ExecMerge Frame[%d] Player[%d] CaneMerge[%s] LogicMergeType[%d] FrameMergeType[%d] DragTower[%d] TargetTower[%d]', gBattleFrameCount, self.playerId, tostring(canMerge), logicMergeType, mergeType, dragTower.towerRes.birthFlag, targetTower.towerRes.birthFlag))
+		-- gBattleManager:AddBattleLog(string.format('ExecMerge Frame[%d] Player[%d] CaneMerge[%s] LogicMergeType[%d] FrameMergeType[%d] DragTower[%d] TargetTower[%d]', gBattleFrameCount, self.playerId, tostring(canMerge), logicMergeType or 0, mergeType, dragTower.towerRes.birthFlag, targetTower.towerRes.birthFlag))
 		-- warn(string.format('ExecMerge Frame[%d] Player[%d] CaneMerge[%s] LogicMergeType[%d] FrameMergeType[%d] DragTower[%d-%d] TargetTower[%d-%d]', gBattleFrameCount, self.playerId, tostring(canMerge), logicMergeType or 0, mergeType, dragTower.towerRes.baseId, dragTower.towerRes.birthFlag, targetTower.towerRes.baseId, targetTower.towerRes.birthFlag))
 		if not canMerge or (mergeType ~= 0 and mergeType ~= logicMergeType) then
 			return ErrorCode.MERGE_TYPENOTMATCH
@@ -715,7 +884,7 @@ function BattlePlayer:GetGrid( _gridIndex, ... )
 	return self.gridList[_gridIndex] or false
 end
 
-function BattlePlayer:AddTower( _towerRes, _star, _posIndex, _isRoll, ... )  
+function BattlePlayer:AddTower( _towerRes, _star, _posIndex, _isRoll, _pendingId, ... )  
 	if not _towerRes or _star <= 0 then
 		return false
 	end
@@ -730,6 +899,13 @@ function BattlePlayer:AddTower( _towerRes, _star, _posIndex, _isRoll, ... )
 	-- 添加到塔列表
 	self.towerList[_posIndex] = tower
 
+	if _pendingId then
+		local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.PENDINGTOWER, self.playerId, tower, _pendingId)
+	end
+
+	-- 进入
+	tower:Enter()
+
 	-- 进入格子
 	self.gridList[_posIndex]:OnTowerEnter(tower)
 	-- 通知AI添加塔
@@ -738,13 +914,18 @@ function BattlePlayer:AddTower( _towerRes, _star, _posIndex, _isRoll, ... )
 	end
 
 	-- 标记连接池已脏
-	if tower:HasUnitFlag(BattleUnitFlag.CONNECT) then
+	if HasBattleFlag(tower.unitFlag, BattleUnitFlag.CONNECT) then
 		self.isConnectDirty = true
 	end
 
 	-- 改变总星级缓存
 	self.totalStar = self.totalStar + _star
-	self.isTotalStarDiry = true
+	self.isTotalStarDirty = true
+
+	-- 更新参数
+	if #_towerRes.paramList > 0 then
+		self:AddParamValue(_towerRes.paramList[1], 1, _towerRes.baseId)
+	end
 
 	-- 打印log
 	-- gBattleManager:AddBattleLog(string.format('Add Tower Frame[%d] Player[%d] Tower[%d-%d-%d] Pos[%d] Random[%d-%d]', gBattleFrameCount, self.playerId, towerId, _towerRes.baseId, _towerRes.level, _posIndex, self.randNum:GetPoolNum(), self.randNum:GetCount()))
@@ -752,19 +933,18 @@ function BattlePlayer:AddTower( _towerRes, _star, _posIndex, _isRoll, ... )
 	return tower
 end
 
-function BattlePlayer:AddTowerByFrame( _frame, _towerRes, _star, _posIndex, _isRoll, _addType, ... )
+function BattlePlayer:AddTowerByFrame( _frame, _towerRes, _star, _posIndex, _isRoll, _addType, _hasExtraStar, ... )
 	if not _towerRes or _star <= 0 then
 		return
 	end
 	local gbTower, pendingId = false, false
 	if G_SendGBCommand then
-		gbTower, pendingId = G_SendGBCommand(GBCommandType.ADDTOWER, self.playerId, _towerRes, _star, _posIndex, false, _addType)
+		gbTower, pendingId = G_SendGBCommand(GBCommandType.ADDTOWER, self.playerId, _towerRes, _star, _posIndex, false, _addType, _hasExtraStar)
 	end
 	if _frame then
 		_frame:AddFrameAction(BattleFrameActionType.ADDTOWER, self, _towerRes, _star, _posIndex, pendingId)
 	else
-		local tower = self:AddTower(_towerRes, _star, _posIndex, _isRoll)
-		local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.PENDINGTOWER, self.playerId, tower, pendingId)
+		local tower = self:AddTower(_towerRes, _star, _posIndex, _isRoll, pendingId)
 	end
 	self:BusyTowerPos(_posIndex)
 end
@@ -774,28 +954,28 @@ function BattlePlayer:UpgradeTower( _towerPoolIndex, ... )
 	if not towerResId then
 		return
 	end
-	local towerGrade = self.towerGradeList[towerResId]
-	if not towerGrade or towerGrade.grade == Constants.BATTLE_MAX_GRADE then
+	local towerInfo = self.towerInfoList[towerResId]
+	if not towerInfo or towerInfo.grade == Constants.BATTLE_MAX_GRADE then
 		return
 	end
 	-- 等级+1
-	towerGrade.grade = towerGrade.grade + 1
-	-- towerGrade.cost = Constants.BATTLE_GRADE_COST[towerGrade.grade]
+	towerInfo.grade = towerInfo.grade + 1
+	-- towerInfo.cost = Constants.BATTLE_GRADE_COST[towerInfo.grade]
 	-- 通知同类塔升级
 	for i = 1, #self.towerList do
 		local tower = self.towerList[i]
 		if tower and tower.towerRes.id == towerResId then
-			tower:OnUpgrade(towerGrade.grade)
+			tower:OnUpgrade(towerInfo.grade)
 		end
 	end
 
 	-- 通知AI塔升阶
 	if self.playerAI then
-		self.playerAI:OnTowerUpgrade(towerResId, towerGrade.grade)
+		self.playerAI:OnTowerUpgrade(towerResId, towerInfo.grade)
 	end
 
 	-- 通知关联状态层刷新
-	local bufferLayerList = towerGrade.bufferLayerList
+	local bufferLayerList = towerInfo.bufferLayerList
 	if bufferLayerList then
 		for i = 1, #bufferLayerList do
 			local layer = bufferLayerList[i]
@@ -806,7 +986,7 @@ function BattlePlayer:UpgradeTower( _towerPoolIndex, ... )
 	-- 通知前端升级
 	local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.UPGRADE, self.playerId, _towerPoolIndex)
 
-	-- gBattleManager:AddBattleLog(string.format('Upgrade Tower Frame[%d] Player[%d] Tower[%d] Grade[%d]', gBattleFrameCount, self.playerId, towerResId, towerGrade.grade))
+	-- gBattleManager:AddBattleLog(string.format('Upgrade Tower Frame[%d] Player[%d] Tower[%d] Grade[%d]', gBattleFrameCount, self.playerId, towerResId, towerInfo.grade))
 end
 
 function BattlePlayer:UpgradeTowerByFrame( _frame, _towerPoolIndex, ... )
@@ -823,11 +1003,13 @@ function BattlePlayer:RemoveTower( _posIndex, _leaveFlags, ... )
 		return
 	end
 
+	local towerRes = tower.towerRes
+
 	-- 打印log
 	-- gBattleManager:AddBattleLog(string.format('Remove Tower Frame[%d] Player[%d] Tower[%d-%d-%d] Pos[%d]', gBattleFrameCount, self.playerId, tower.towerId, tower.towerRes.baseId, tower.towerRes.level, tower.posIndex))
 
 	-- 标记连接池已脏
-	if tower:HasUnitFlag(BattleUnitFlag.CONNECT) then
+	if HasBattleFlag(tower.unitFlag, BattleUnitFlag.CONNECT) then
 		self.isConnectDirty = true
 	end
 
@@ -841,12 +1023,18 @@ function BattlePlayer:RemoveTower( _posIndex, _leaveFlags, ... )
 	-- 从列表移除
 	self.towerList[_posIndex] = false
 	gBattleRecord:RemoveBattleUnit(tower.unitId)
+
 	-- 销毁
 	tower:Destroy(_leaveFlags)
 
 	-- 改变总星级
 	self.totalStar = self.totalStar - tower.star
-	self.isTotalStarDiry = true
+	self.isTotalStarDirty = true
+
+	-- 更新参数
+	if #towerRes.paramList > 0 then
+		self:AddParamValue(towerRes.paramList[1], -1, towerRes.baseId)
+	end
 end
 
 function BattlePlayer:RemoveTowerByFrame( _frame, _posIndex, _leaveFlags,  ... )  
@@ -873,13 +1061,15 @@ function BattlePlayer:ExchangeTower( _dragIndex, _targetIndex, ... )
 		self.playerAI:OnTowerLeave(dragTower)
 		self.playerAI:OnTowerLeave(targetTower)
 	end
+	dragTower:Leave(FLAGMAP(BattleUnitLeaveType.EXCHANGE))
+	targetTower:Leave(FLAGMAP(BattleUnitLeaveType.EXCHANGE))
 
 	-- 列表中交换位置
 	self.towerList[_dragIndex] = targetTower
 	self.towerList[_targetIndex] = dragTower
 
-	dragTower.posIndex = _targetIndex
-	targetTower.posIndex = _dragIndex
+	dragTower:SetPosIndex(_targetIndex)
+	targetTower:SetPosIndex(_dragIndex)
 
 	-- 进入格子
 	self.gridList[_dragIndex]:OnTowerEnter(targetTower)
@@ -888,9 +1078,11 @@ function BattlePlayer:ExchangeTower( _dragIndex, _targetIndex, ... )
 		self.playerAI:OnTowerEnter(targetTower)
 		self.playerAI:OnTowerEnter(dragTower)
 	end
+	dragTower:Enter(BattleUnitEnterType.EXCHANGE)
+	targetTower:Enter(BattleUnitEnterType.EXCHANGE)
 
 	-- 标记连接池已脏
-	if targetTower:HasUnitFlag(BattleUnitFlag.CONNECT) or dragTower:HasUnitFlag(BattleUnitFlag.CONNECT) then
+	if HasBattleFlag(targetTower.unitFlag, BattleUnitFlag.CONNECT) or HasBattleFlag(dragTower.unitFlag, BattleUnitFlag.CONNECT) then
 		self.isConnectDirty = true
 	end
 end
@@ -948,53 +1140,99 @@ function BattlePlayer:GetTowerByPos( _posIndex, ... )
 	return self.towerList[_posIndex] or false
 end
 
-function BattlePlayer:RandomTowerResId( _randNum, ... )
+function BattlePlayer:RandomTowerResId( _randNum, _exceptResId, ... )
 	local randNum = _randNum or self.randNum
-	local index = randNum:NextInt(#self.towerPool)
-	return self.towerPool[index]
+	local towerPool = self.towerPool
+	local count = _exceptResId and #towerPool - 1 or #towerPool
+	local index = randNum:NextInt(count)
+	local towerResId = 0
+	if _exceptResId then
+		for i = 1, count + 1 do
+			towerResId = towerPool[i]
+			if towerResId ~= _exceptResId then
+				index = index - 1
+			end
+			if index == 0 then
+				break
+			end
+		end
+	else
+		towerResId = towerPool[index]
+	end
+	return towerResId
 end
 
 function BattlePlayer:RandomTowerPosIndex( _randNum, ... )
 	-- 塔满，没有空余位置
-	if #self.emptyPosList == 0 then
+	if self.emptyPosCount == 0 then
 		return 0
 	end
 	local index = 1
 	local randNum = _randNum or self.randNum
-	if #self.emptyPosList > 1 then
-		index = randNum:NextInt(#self.emptyPosList)
-		-- warn('RandomTowerPosIndex', self.playerId, index, self.emptyPosList[index], gameutils.JSON:encode(self.emptyPosList),  #self.emptyPosList, self.randNum:GetPoolNum(), self.randNum:GetCount())
+	if self.emptyPosCount > 1 then
+		index = randNum:NextInt(self.emptyPosCount)
 	end
-	return self.emptyPosList[index]
+	local posList = self.posList
+	for i = 1, BattleConstants.BATTLE_MAX_TOWER do
+		if posList[i] == 0 then
+			index = index - 1
+		end
+		if index == 0 then
+			return i
+		end
+	end
+	return 0
 end
 
 function BattlePlayer:FreeTowerPos( _posIndex, ... )
-	table_insert(self.emptyPosList, _posIndex)
+	self.posList[_posIndex] = 0
+	self.emptyPosCount = self.emptyPosCount + 1
 end
 
 function BattlePlayer:BusyTowerPos( _posIndex, ... )
-	for i = 1, #self.emptyPosList do
-		if self.emptyPosList[i] == _posIndex then
-			table_remove(self.emptyPosList, i)
-			break
-		end
-	end
+	self.posList[_posIndex] = 1
+	self.emptyPosCount = self.emptyPosCount - 1
 end
 
 function BattlePlayer:HasEmptyPos( ... )
-	return #self.emptyPosList ~= 0
+	return self.emptyPosCount ~= 0
 end
 
 function BattlePlayer:GetTowerResIdByPoolIndex( _index, ... )
 	return self.towerPool[_index]
 end
 
+function BattlePlayer:GetPoolIndexByTowerResId( _towerResId )
+	return self.towerInfoList[_towerResId].poolIndex
+end
+
+function BattlePlayer:GetTowerAwaken( _towerResId )
+	local towerInfo = self.towerInfoList[_towerResId]
+	return towerInfo.awakenTalentId, towerInfo.awakenIndex, towerInfo.awakenLevel
+end
+
 function BattlePlayer:GetTowerGrade( _towerResId, ... )
-	local towerGrade = self.towerGradeList[_towerResId]
-	if not towerGrade then
+	local towerInfo = self.towerInfoList[_towerResId]
+	if not towerInfo then
 		return 1
 	end
-	return towerGrade.grade
+	return towerInfo.grade
+end
+
+function BattlePlayer:GetTowerGradeByBaseId( _towerBaseId )
+	local towerInfo = self.towerBaseInfoList[_towerBaseId]
+	if not towerInfo then
+		return 1
+	end
+	return towerInfo.grade
+end
+
+function BattlePlayer:GetTowerLevelByBaseId( _towerBaseId )
+	local towerInfo = self.towerBaseInfoList[_towerBaseId]
+	if not towerInfo then
+		return 1
+	end
+	return towerInfo.level
 end
 
 function BattlePlayer:GetTowerGradeByPoolIndex( _index, ... )
@@ -1004,27 +1242,27 @@ end
 
 function BattlePlayer:GetTowerUpgradeCostByPoolIndex( _index, ... )
 	local towerResId = self.towerPool[_index]
-	local towerGrade = self.towerGradeList[towerResId]
-	if not towerGrade then
+	local towerInfo = self.towerInfoList[towerResId]
+	if not towerInfo then
 		return Constants.BATTLE_GRADE_COST[1]
 	end
-	return towerGrade.cost
+	return towerInfo.cost
 end
 
 function BattlePlayer:UpdateTowerUpgradeCostByIndex( _index, _isUpgrade, ... )
 	local towerResId = self.towerPool[_index]
-	local towerGrade = self.towerGradeList[towerResId]
-	if not towerGrade then
+	local towerInfo = self.towerInfoList[towerResId]
+	if not towerInfo then
 		return
 	end
 	if _isUpgrade then
-		towerGrade.localGrade = towerGrade.localGrade + 1
-		towerGrade.cost = Constants.BATTLE_GRADE_COST[towerGrade.localGrade]
+		towerInfo.localGrade = towerInfo.localGrade + 1
+		towerInfo.cost = Constants.BATTLE_GRADE_COST[towerInfo.localGrade]
 	else
-		towerGrade.localGrade = towerGrade.grade
-		towerGrade.cost = Constants.BATTLE_GRADE_COST[towerGrade.grade]
+		towerInfo.localGrade = towerInfo.grade
+		towerInfo.cost = Constants.BATTLE_GRADE_COST[towerInfo.grade]
 	end
-	-- warn('UpdateTowerUpgradeCostByIndex', _index, towerGrade.cost, towerGrade.grade, towerGrade.localGrade)
+	-- warn('UpdateTowerUpgradeCostByIndex', _index, towerInfo.cost, towerInfo.grade, towerInfo.localGrade)
 end
 
 function BattlePlayer:AddMonster( _id, _monsterHP, _position, ... )
@@ -1042,8 +1280,12 @@ function BattlePlayer:AddMonster( _id, _monsterHP, _position, ... )
 	-- 添加到怪物列表
 	monster.sortIndex = #self.monsterList + 1
 	table_insert(self.monsterList, monster)
+
 	-- 通知前端添加怪物
 	local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.ADDMONSTER, self.playerId, monsterId)
+
+	-- 进场
+	monster:Enter()
 	-- 打印log
 	-- gBattleManager:AddBattleLog(string.format('Add Monster Frame[%d] Player[%d] Monster[%d-%d]', gBattleFrameCount, self.playerId, monsterId, _id))
 	
@@ -1057,7 +1299,7 @@ function BattlePlayer:RemoveMonster( _monsterId, _leaveFlags, ... )
 	end
 
 	-- 通知前端移除怪物
-	local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.REMOVEMONSTER, self.playerId, _monsterId)
+	local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.REMOVEMONSTER, self.playerId, _monsterId, _leaveFlags)
 	-- 从列表移除
 	gBattleRecord:RemoveBattleUnit(monster.unitId)
 	-- 销毁
@@ -1122,6 +1364,7 @@ function BattlePlayer.SortMonster( _monster, _nextMonsterList, ... )
 		end
 	end
 end
+SortMonster = BattlePlayer.SortMonster
 
 function BattlePlayer:UpdateMonster( _deltaTime, ... )
 	if self.isCoop then
@@ -1147,21 +1390,27 @@ function BattlePlayer:PkUpdateMonster( _deltaTime, ... )
 		end
 		monsterList[i] = nil
 	end
-	local maxHPMonster = nextMonsterList[1] or false
-	local minHPMonster = nextMonsterList[1] or false
+	local maxHPMonster = false
+	local minHPMonster = false
 	for i = 1, #nextMonsterList do
 		local monster = nextMonsterList[i]
 		monsterList[i] = monster
 		monster.sortIndex = i
 		nextMonsterList[i] = nil
 
-		-- 最大血量怪物
-		if maxHPMonster.curHP < monster.curHP then
-			maxHPMonster = monster
-		end
-		-- 最小血量怪物
-		if minHPMonster.curHP > monster.curHP then
-			minHPMonster = monster
+		if monster.curHP then
+			-- 最大血量怪物
+			if not maxHPMonster then
+				maxHPMonster = monster
+			elseif maxHPMonster.curHP < monster.curHP then
+				maxHPMonster = monster
+			end
+			-- 最小血量怪物
+			if not minHPMonster then
+				minHPMonster = monster
+			elseif minHPMonster.curHP > monster.curHP then
+				minHPMonster = monster
+			end
 		end
 	end
 	self.maxHPMonster = maxHPMonster
@@ -1198,8 +1447,8 @@ function BattlePlayer:CoopSortMonster( _commonMonsterList, _clearCommon, ... )
 	local monsterList = self.monsterList
 	local nextMonsterList = self.monsterSortList
 
-	local maxHPMonster = nextMonsterList[1] or _commonMonsterList[1] or false
-	local minHPMonster = nextMonsterList[1] or _commonMonsterList[1] or false
+	local maxHPMonster = false
+	local minHPMonster = false
 	local commonMonsterCount = #_commonMonsterList
 	for i = 1, commonMonsterCount do
 		local monster = _commonMonsterList[i]
@@ -1209,13 +1458,19 @@ function BattlePlayer:CoopSortMonster( _commonMonsterList, _clearCommon, ... )
 			_commonMonsterList[i] = nil
 		end
 
-		-- 最大血量怪物
-		if maxHPMonster.curHP < monster.curHP then
-			maxHPMonster = monster
-		end
-		-- 最小血量怪物
-		if minHPMonster.curHP > monster.curHP then
-			minHPMonster = monster
+		if monster.curHP then
+			-- 最大血量怪物
+			if not maxHPMonster then
+				maxHPMonster = monster
+			elseif maxHPMonster.curHP < monster.curHP then
+				maxHPMonster = monster
+			end
+			-- 最小血量怪物
+			if not minHPMonster then
+				minHPMonster = monster
+			elseif minHPMonster.curHP > monster.curHP then
+				minHPMonster = monster
+			end
 		end
 	end
 	for i = 1, #nextMonsterList do
@@ -1224,13 +1479,19 @@ function BattlePlayer:CoopSortMonster( _commonMonsterList, _clearCommon, ... )
 		monster.sortIndex = i + commonMonsterCount
 		nextMonsterList[i] = nil
 
-		-- 最大血量怪物
-		if maxHPMonster.curHP < monster.curHP then
-			maxHPMonster = monster
-		end
-		-- 最小血量怪物
-		if minHPMonster.curHP > monster.curHP then
-			minHPMonster = monster
+		if monster.curHP then
+			-- 最大血量怪物
+			if not maxHPMonster then
+				maxHPMonster = monster
+			elseif maxHPMonster.curHP < monster.curHP then
+				maxHPMonster = monster
+			end
+			-- 最小血量怪物
+			if not minHPMonster then
+				minHPMonster = monster
+			elseif minHPMonster.curHP > monster.curHP then
+				minHPMonster = monster
+			end
 		end
 	end
 	self.maxHPMonster = maxHPMonster
@@ -1268,24 +1529,29 @@ function BattlePlayer:AddCollider( _id, _owner, _triggerUnit, ... )
 	end 
 
 	local position = 0
+	local pendingFrameCount = colliderRes.pendingTime == 0 and 0 or math_ceil(colliderRes.pendingTime / Constants.BATTLE_FRAME_TIME)
 	if colliderRes.isRandomPos == 0 and _triggerUnit and _triggerUnit.unitType == BattleUnitType.MONSTER then
 		position = _triggerUnit.position
 	else
 		position = gBattleRandNum:NextInt(1000, BattleConstants.BATTLE_ROAD_LENGTH - 1000)
+		local ownerUnit = gBattleRecord:GetBattleUnit(_owner.unitId)
+		if ownerUnit then
+			pendingFrameCount = pendingFrameCount + ownerUnit:GetPositionDistance(position)
+		end
 	end
 	
 	local colliderId = self:GenerateColliderId()
 	local collider = BattleCollider()
-	if not collider:Init(colliderRes, colliderId, _owner, self, position) then
+	if not collider:Init(colliderRes, colliderId, _owner, self, position, pendingFrameCount) then
 		return false
 	end
 
 	-- 添加到怪物列表
 	collider.node = LMLinkList_Add(self.colliderList, collider)
 	-- 通知前端添加碰撞
-	local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.ADDCOLLIDER, self.playerId, colliderId)
+	local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.ADDCOLLIDER, self.playerId, colliderId, _owner.unitId, pendingFrameCount)
 	-- 打印log
-	-- gBattleManager:AddBattleLog(string.format('Add Collider Frame[%d] Player[%d] Collider[%d-%d-%d-%s]', gBattleFrameCount, self.playerId, colliderId, _id, position, _owner.unitId))
+	-- gBattleManager:AddBattleLog(string.format('Add Collider Frame[%d] Player[%d] Collider[%d-%d-%d-%d]', gBattleFrameCount, self.playerId, colliderId, _id, position, _owner.unitId))
 	
 	return collider
 end
@@ -1342,7 +1608,7 @@ function BattlePlayer:ConsumePoint( _costPoint, ... )
 	local costPoint = _costPoint or self.costPoint
 	self.point = self.point - costPoint
 	if not _costPoint then
-		self.costPoint = self.costPoint + BattleConstants.BATTLE_COST_POINT_STEP
+		self.costPoint = self.costPoint + Constants.BATTLE_COST_POINT_STEP
 		-- self.costPoint = 0
 	end
 	-- warn('ConsumePoint', self.playerId, self.point, costPoint)
@@ -1384,31 +1650,8 @@ function BattlePlayer:StealPoint( _targetPlayer, _point, ... )
 	self:AddPoint(point)
 end
 
--- 刷新连接池
-function BattlePlayer:RefreshTowerConnect( ... )
-	local connectTowerList = {}
-	for i = 1, BattleConstants.BATTLE_MAX_TOWER do
-		local tower = self.towerList[i]
-		if tower and tower:HasUnitFlag(BattleUnitFlag.CONNECT) then
-			tower:ResetConnectCount()
-			table_insert(connectTowerList, tower)
-		end
-	end
-	for i = 1, #connectTowerList do
-		local tower = connectTowerList[i]
-		if tower:GetConnectCount() == -1 then
-			local list = {}
-			tower:RefreshTowerConnect(list)
-			local connectCount = #list
-			for n = 1, #list do
-				list[n]:SetConnectCount(connectCount)
-			end
-		end
-	end
-end
-
 function BattlePlayer:AddMissile( _tower, _targetUnitId, _damage, _hitFrame, _effectId, _starIndex, _attackTimes, ... )
-	local missile = BattleMissile_New(_tower, _targetUnitId, _damage, _hitFrame, _effectId, _starIndex, _attackTimes)
+	local missile = BattleMissile_New(_tower.unitId, _targetUnitId, _damage, _hitFrame, _effectId, _starIndex, _attackTimes)
 	local frameMissileList = self.missileList[_hitFrame]
 	if not frameMissileList then
 		frameMissileList = {}
@@ -1428,51 +1671,38 @@ function BattlePlayer:UpdateMissile( ... )
 		local missile = frameMissileList[i]
 		local targetMonster = gBattleRecord:GetBattleUnit(missile.targetUnitId)
 		if targetMonster then
-			-- 触发攻击  
-			local attacker = missile.tower
-			local triggerParam = BattleTriggerParam_New(attacker, attacker, { targetMonster }, { starIndex = missile.starIndex, attackTimes = missile.attackTimes })
-			gBattleTrigger:FireTrigger(BattleTriggerType.ATTACK, triggerParam)
-			-- 计算伤害
-			local damage = missile.damage + triggerParam.extraDamage
-			local isCritical = false
-			damage, isCritical = attacker:CalcDamage(damage, targetMonster, nil, nil, false)
-			-- 怪物被击
-			targetMonster:OnAttackDamage(attacker, damage, nil, nil, isCritical and BattleDamageType.CRITICAL or BattleDamageType.NORMAL)
+			local attacker = gBattleRecord:GetBattleUnit(missile.towerUnitId)
+			if attacker then
+				-- 刷新同怪物攻击次数
+				local sameAttackTimes = attacker:RefreshSameMonsterAttackTimes(targetMonster)
+				-- 攻击者未死亡，方可触发攻击 
+				local triggerParam = BattleTriggerParam_New(attacker, attacker, { targetMonster }, { sameAttackTimes = sameAttackTimes, attackTimes = missile.attackTimes })
+				gBattleTrigger:FireTrigger(BattleTriggerType.ATTACK, triggerParam)
+				BattleTriggerParam_Destroy(triggerParam)
+				-- 计算伤害
+				local isCritical = false
+				local damage = missile.damage + triggerParam.extraDamage
+				damage, isCritical = attacker:CalcDamage(damage, targetMonster, nil, nil, false)
+				-- 怪物被击
+				targetMonster:OnAttackDamage(attacker, damage, nil, nil, damage >= 0 and (isCritical and BattleDamageType.CRITICAL or BattleDamageType.NORMAL) or BattleDamageType.HEAL)
+			end
 		end
+		BattleMissile_Destroy(missile)
 	end
 	self.missileList[gBattleFrameCount] = nil
 end
 
-function BattlePlayer:UpdateTotalStar( ... )
-	if not self.isTotalStarDiry then
-		return
-	end
-	local isLowerOpponent = self.totalStar < self.opponent.totalStar
-	local isOpponentLower = self.opponent.totalStar < self.totalStar
-	self:FireAllTowerTrigger(true, BattleTriggerType.TOTALSTAR, tostring(isLowerOpponent and -1 or 1))
-	self.opponent:FireAllTowerTrigger(true, BattleTriggerType.TOTALSTAR, tostring(isOpponentLower and -1 or 1))
-end
-
-function BattlePlayer:FireAllTowerTrigger( _isFlagTrigger, _triggerType, _triggerValue, ... )
-	for i = 1, #self.towerList do
-		local tower = self.towerList[i]
-		if tower then
-			tower:FireTrigger(_isFlagTrigger, _triggerType, _triggerValue)
-		end
-	end
-end
-
 function BattlePlayer:BindGradeBufferLayer( _towerResId, _bufferLayer, ... )
-	local bufferLayerList = self.towerGradeList[_towerResId].bufferLayerList
+	local bufferLayerList = self.towerInfoList[_towerResId].bufferLayerList
 	if not bufferLayerList then
 		bufferLayerList = {}
-		self.towerGradeList[_towerResId].bufferLayerList = bufferLayerList
+		self.towerInfoList[_towerResId].bufferLayerList = bufferLayerList
 	end
 	table_insert(bufferLayerList, _bufferLayer)
 end
 
 function BattlePlayer:UnBindGradeBufferLayer( _towerResId, _bufferLayer, ... )
-	local bufferLayerList = self.towerGradeList[_towerResId].bufferLayerList
+	local bufferLayerList = self.towerInfoList[_towerResId].bufferLayerList
 	if not bufferLayerList then
 		return
 	end
@@ -1484,5 +1714,131 @@ function BattlePlayer:UnBindGradeBufferLayer( _towerResId, _bufferLayer, ... )
 	end
 end
 
-classend()
-export('BattlePlayer', BattlePlayer)
+function BattlePlayer:ExecSkill( _battleUnit, _targetUnit, _skillType, _delayTime, _param, _startPosIndex, _effectResId, ... )
+	local skill = BattleSkill.Create(_skillType)
+	if not skill then
+		return false
+	end
+	if skill:Init(_battleUnit, _targetUnit, _delayTime, _param, _startPosIndex, _effectResId) then
+		table_insert(self.skillList, skill)
+		return true
+	end
+	return false
+end
+
+-- 刷新连接池
+function BattlePlayer:RefreshTowerConnect( ... )
+	local connectTowerList = {}
+	for i = 1, BattleConstants.BATTLE_MAX_TOWER do
+		local tower = self.towerList[i]
+		if tower and HasBattleFlag(tower.unitFlag, BattleUnitFlag.CONNECT) then
+			tower:ResetConnectCount()
+			table_insert(connectTowerList, tower)
+		end
+	end
+	for i = 1, #connectTowerList do
+		local tower = connectTowerList[i]
+		if tower:GetConnectCount() == -1 then
+			local list = {}
+			tower:RefreshTowerConnect(list)
+			local connectCount = #list
+			for n = 1, #list do
+				list[n]:SetConnectCount(connectCount)
+			end
+		end
+	end
+end
+
+function BattlePlayer:UpdateTotalStar( ... )
+	if not self.isTotalStarDirty then
+		return
+	end
+	self.isTotalStarDirty = false
+	self.opponent.isTotalStarDirty = false
+	local isLowerOpponent = self.totalStar < self.opponent.totalStar
+	local isOpponentLower = self.opponent.totalStar < self.totalStar
+	self:FireAllTowerTrigger(true, BattleTriggerType.TOTALSTAR, isLowerOpponent and -1 or 1)
+	self.opponent:FireAllTowerTrigger(true, BattleTriggerType.TOTALSTAR, isOpponentLower and -1 or 1)
+end
+
+function BattlePlayer:FireAllTowerTrigger( _isFlagTrigger, _triggerType, _triggerValue, _towerBaseId, ... )
+	for i = 1, #self.towerList do
+		local tower = self.towerList[i]
+		if tower then
+			tower:FireTrigger(_isFlagTrigger, _triggerType, _triggerValue, _towerBaseId)
+		end
+	end
+end
+
+function BattlePlayer:AddParamValue( _paramType, _addValue, _towerBaseId )
+	local param = self.paramMap[_paramType]
+	if not param then
+		return
+	end
+	if _towerBaseId ~= param.default.towerBaseId then
+		return
+	end
+	if param.default.notifyParam then
+		param.nextValue = param.nextValue + _addValue
+	else
+		param.nextValue = 1
+		param.value = param.value + _addValue
+	end
+	self.isParamDirty = true
+end
+
+function BattlePlayer:UpdateParam( ... )
+	if not self.isParamDirty then
+		return
+	end
+	self.isParamDirty = false
+
+	for paramType, param in pairs(self.paramMap) do
+		if param.default.notifyParam then
+			if param.value ~= param.nextValue then
+				param.value = param.nextValue
+				local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.PLAYERPARAM, self.playerId, paramType, param.value)
+			end
+		elseif param.nextValue == 1 then
+			param.netxtValue = 0
+			if param.default.triggerType then
+				if param.default.hitValues then
+					local hitValue = param.default.hitValues[param.value] or 1
+					self:FireAllTowerTrigger(param.default.isFlagTrigger, param.default.triggerType, hitValue, param.default.towerBaseId)
+				else
+					self:FireAllTowerTrigger(param.default.isFlagTrigger, param.default.triggerType, param.value, param.default.towerBaseId)
+				end
+			end
+		end
+	end
+end
+
+function BattlePlayer:NotifyPlayerParam( _paramType, _param )
+	if not G_SendGBCommand then
+		return
+	end
+	if _paramType then
+		_param = _param or self.paramMap[_paramType]
+		if _param.default.notifyParam then
+			G_SendGBCommand(GBCommandType.PLAYERPARAM, self.playerId, _paramType, _param.value)
+		end
+		return
+	end
+	for paramType, param in pairs(self.paramMap) do
+		if param.default.notifyParam then
+			G_SendGBCommand(GBCommandType.PLAYERPARAM, self.playerId, paramType, param.value)
+		end
+	end
+end
+
+local Pow2List = { 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384 }
+function BattlePlayer.EncodePosList( _posList )
+	local result = 0
+	for i = 1, BattleConstants.BATTLE_MAX_TOWER do
+		if _posList[i] == 1 then
+			result = result + Pow2List[i]
+		end
+	end
+	return result
+end
+EncodePosList = BattlePlayer.EncodePosList

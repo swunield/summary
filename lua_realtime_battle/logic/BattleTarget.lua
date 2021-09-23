@@ -1,9 +1,25 @@
 ---
 --- class BattleTarget
 -- @classmod BattleTarget
-class('BattleTarget')
+BattleTarget = xclass('BattleTarget')
 
 local table_insert = table.insert
+local table_remove = table.remove
+
+local GetTargetPlayer = false
+local FindFrontMonster = false
+local FindBackMonster = false
+local FindMaxHPMonster = false
+local FindMinHPMonster = false
+local RandomTargets = false
+local FindRandomUnit = false
+local FindSubRangeTarget = false
+local FindSubLinkTarget = false
+local FindSubCrossTarget = false
+local FindSubCrossGridTarget = false
+local CheckCondition = false
+local CheckTargetsCondition = false
+local FindTarget = false
 
 local TargetSwitcher = 
 {
@@ -33,11 +49,11 @@ local TargetSwitcher =
 	end,
 	-- 目标
 	[BattleTargetType.TARGET] = function( _targetRes, _battleUnit, _player, _targetCount, _defaultTargets, _attackerUnit, _triggerUnit, ... )
-		return _defaultTargets or {}
+		return CheckTargetsCondition(_targetRes, _defaultTargets or {})
 	end,
 	-- 触发者
 	[BattleTargetType.TRIGGER] = function( _targetRes, _battleUnit, _player, _targetCount, _defaultTargets, _attackerUnit, _triggerUnit, ... )
-		return { _triggerUnit }
+		return CheckTargetsCondition(_targetRes, { _triggerUnit })
 	end,
 	-- 自己
 	[BattleTargetType.SELF] = function( _targetRes, _battleUnit, _player, _targetCount, _defaultTargets, _attackerUnit, _triggerUnit, ... )
@@ -63,6 +79,77 @@ local TargetSubSwitcher =
 	[BattleTargetSubType.CROSSGRID] = function( _battleUnit, _targetRes, _player, _targets, _targetCount, ... )
 		return FindSubCrossGridTarget(_battleUnit, _targetRes, _player, _targets, _targetCount)
 	end,
+}
+
+local TargetPlayerSwitcher = 
+{
+	-- 自己
+	[BattlePlayerType.SELF] = function( _player, ... )
+		return _player
+	end,
+	-- 对手
+	[BattlePlayerType.OPPONENT] = function( _player, ... )
+		return gBattleRecord.playerList[_player.playerIndex % 2 + 1]
+	end
+}
+
+local AllTargetUnitSwitcher = 
+{
+	-- 玩家
+	[BattleUnitType.PLAYER] = function( _targets, _player, _isRandom, ... )
+		if _isRandom then
+			for i = 1, #gBattleRecord.playerList do
+				table_insert(_targets, gBattleRecord.playerList[i])
+			end
+		else
+			table_insert(_targets, _player)
+		end
+		return _targets
+	end,
+	-- 塔
+	[BattleUnitType.TOWER] = function( _targets, _player, _isRandom, _baseId, ... )
+		for i = 1, #_player.towerList do
+			local tower = _player.towerList[i]
+			if tower and (_baseId == 0 or tower.towerRes.baseId == _baseId) then
+				table_insert(_targets, tower)
+			end
+		end
+		return _targets
+	end,
+	-- 格子
+	[BattleUnitType.GRID] = function( _targets, _player, ... )
+		for i = 1, #_player.gridList do
+			local grid = _player.gridList[i]
+			table_insert(_targets, grid)
+		end
+		return _targets
+	end,
+	-- 怪物
+	[BattleUnitType.MONSTER] = function( _targets, _player, ... )
+		local monsterList = _player.monsterList
+		for i = 1, #monsterList do
+			local monster = monsterList[i]
+			if monster:IsValid() then
+				table_insert(_targets, monster)
+			end
+		end
+		return _targets
+	end,
+	-- 碰撞物
+	[BattleUnitType.COLLIDER] = function( _targets, _player, ... )
+		local node = _player.colliderList.first
+		while node do
+			if node.value:IsValid() then
+				table_insert(_targets, node.value)
+			end
+			node = node.next
+		end
+		return _targets
+	end,
+	-- 英雄
+	[BattleUnitType.HERO] = function( _targets, _player, ... )
+		return _player.hero
+	end
 }
 
 function BattleTarget.FindTarget( _targetId, _battleUnit, _defaultTargets, _attackerUnit, _triggerUnit, ... )
@@ -92,82 +179,39 @@ function BattleTarget.FindTarget( _targetId, _battleUnit, _defaultTargets, _atta
 
 	return targets
 end
-
-local AllTargetUnitSwitcher = 
-{
-	-- 玩家
-	[BattleUnitType.PLAYER] = function( _targets, _player, _isRandom, ... )
-		if _isRandom then
-			for i = 1, #gBattleRecord.playerList do
-				table_insert(_targets, gBattleRecord.playerList[i])
-			end
-		else
-			table_insert(_targets, _player)
-		end
-		return _targets
-	end,
-	-- 塔
-	[BattleUnitType.TOWER] = function( _targets, _player, ... )
-		for i = 1, #_player.towerList do
-			local tower = _player.towerList[i]
-			if tower then
-				table_insert(_targets, tower)
-			end
-		end
-		return _targets
-	end,
-	-- 格子
-	[BattleUnitType.GRID] = function( _targets, _player, ... )
-		for i = 1, #_player.gridList do
-			local grid = _player.gridList[i]
-			table_insert(_targets, grid)
-		end
-		return _targets
-	end,
-	-- 怪物
-	[BattleUnitType.MONSTER] = function( _targets, _player, ... )
-		local monsterList = _player.monsterList
-		for i = 1, #monsterList do
-			local monster = monsterList[i]
-			if monster:IsValid() then
-				table_insert(_targets, monster)
-			end
-		end
-		return _targets
-	end,
-	-- 碰撞物
-	[BattleUnitType.COLLIDER] = function( _targets, _player, ... )
-		local node = _player.colliderList.first
-		while node do
-			table_insert(_targets, node.value)
-			node = node.next
-		end
-		return _targets
-	end,
-	-- 英雄
-	[BattleUnitType.HERO] = function( _targets, _player, ... )
-		return _player.hero
-	end
-}
+FindTarget = BattleTarget.FindTarget
 
 function BattleTarget.CheckCondition( _targetRes, _targetUnit, ... )
 	if not _targetRes then
 		return true
 	end
-	-- if _targetRes.targetBuffer > 0 and not _targetUnit:HasBuffer(_targetRes.targetBuffer) then
-	-- 	return false
-	-- end
-	-- if _targetRes.targetBuffer < 0 and _targetUnit:HasBuffer(-_targetRes.targetBuffer) then
-	-- 	return false
-	-- end
-	if _targetRes.targetFlag > 0 and not _targetUnit:HasUnitFlag(_targetRes.targetFlag) then
-		return false
-	end
-	if _targetRes.targetFlag < 0 and _targetUnit:HasUnitFlag(-_targetRes.targetFlag) then
-		return false
+	local targetFlag = _targetRes.targetFlag
+	if targetFlag ~= 0 then
+		if targetFlag > 0 and not HasBattleFlag(_targetUnit.unitFlag, targetFlag) then
+			return false
+		end
+		if targetFlag < 0 and HasBattleFlag(_targetUnit.unitFlag, -targetFlag) then
+			return false
+		end
 	end
 	return true
 end
+CheckCondition = BattleTarget.CheckCondition
+
+function BattleTarget.CheckTargetsCondition( _targetRes, _targets, ... )
+	if not _targetRes or _targetRes.targetFlag == 0 then
+		return _targets
+	end
+	local targets = {}
+	for i = 1, #_targets do
+		local target = _targets[i]
+		if CheckCondition(_targetRes, target) then
+			table_insert(targets, target)
+		end
+	end
+	return targets
+end
+CheckTargetsCondition = BattleTarget.CheckTargetsCondition
 
 function BattleTarget.FindFrontMonster( _targetRes, _player, _targetCount, ... )
 	local targets = {}
@@ -192,6 +236,7 @@ function BattleTarget.FindFrontMonster( _targetRes, _player, _targetCount, ... )
 	end
 	return targets
 end
+FindFrontMonster = BattleTarget.FindFrontMonster
 
 function BattleTarget.FindBackMonster( _targetRes, _player, _targetCount, ... )
 	local targets = {}
@@ -216,6 +261,7 @@ function BattleTarget.FindBackMonster( _targetRes, _player, _targetCount, ... )
 	end
 	return targets
 end
+FindBackMonster = BattleTarget.FindBackMonster
 
 function BattleTarget.FindMaxHPMonster( _targetRes, _player, _targetCount, ... )
 	local targets = {}
@@ -227,6 +273,7 @@ function BattleTarget.FindMaxHPMonster( _targetRes, _player, _targetCount, ... )
 	end
 	return targets
 end
+FindMaxHPMonster = BattleTarget.FindMaxHPMonster
 
 function BattleTarget.FindMinHPMonster( _targetRes, _player, _targetCount, ... )
 	local targets = {}
@@ -238,6 +285,7 @@ function BattleTarget.FindMinHPMonster( _targetRes, _player, _targetCount, ... )
 	end
 	return targets
 end
+FindMinHPMonster = BattleTarget.FindMinHPMonster
 
 function BattleTarget.RandomTargets( _targets, _targetCount )
 	local count = #_targets
@@ -253,18 +301,20 @@ function BattleTarget.RandomTargets( _targets, _targetCount )
 	end
 	return targets
 end
+RandomTargets = BattleTarget.RandomTargets
 
 function BattleTarget.FindRandomUnit( _targetRes, _player, _targetCount, _isRandom, ... )
 	local targets = {}
 	if not _targetRes or not _player then
 		return targets
 	end
-	targets = AllTargetUnitSwitcher[_targetRes.targetUnitType](targets, _player, _isRandom)
+	targets = AllTargetUnitSwitcher[_targetRes.targetUnitType](targets, _player, _isRandom, _targetRes.targetSubType == BattleTargetSubType.BASEID and _targetRes.subCountId or 0)
 	if _targetCount == 0 then
 		return targets
 	end
 	return RandomTargets(targets, _targetCount)
 end
+FindRandomUnit = BattleTarget.FindRandomUnit
 
 -- 范围目标
 function BattleTarget.FindSubRangeTarget( _battleUnit, _targetRes, _player, _targets, _targetCount,... )
@@ -277,27 +327,30 @@ function BattleTarget.FindSubRangeTarget( _battleUnit, _targetRes, _player, _tar
 	if unitType == BattleUnitType.MONSTER then
 		-- 不去重，向前向后找
 		local monsterList = _player.monsterList
-		for i = 1, count do
-			local monster = _targets[i]
-			local sortIndex = monster.sortIndex
-			local position = _battleUnit.unitType == BattleUnitType.COLLIDER and _battleUnit.position or monster.position
-			for n = sortIndex + 1, #monsterList do
-				local nextMonster = monsterList[n]
-				if nextMonster:IsValid() then
-					if position - nextMonster.position <= range then
-						table_insert(_targets, nextMonster)
-					else
-						break
+		local monsterCount = #monsterList
+		if monsterCount > 0 then
+			for i = 1, count do
+				local monster = _targets[i]
+				local sortIndex = monster.sortIndex
+				local position = _battleUnit.unitType == BattleUnitType.COLLIDER and _battleUnit.position or monster.position
+				for n = sortIndex + 1, monsterCount do
+					local nextMonster = monsterList[n]
+					if nextMonster:IsValid() then
+						if position - nextMonster.position <= range then
+							table_insert(_targets, nextMonster)
+						else
+							break
+						end
 					end
 				end
-			end
-			for n = sortIndex - 1, 1, -1 do
-				local preMonster = monsterList[n]
-				if preMonster:IsValid() then
-					if preMonster.position - position <= range then
-						table_insert(_targets, preMonster)
-					else
-						break
+				for n = sortIndex - 1, 1, -1 do
+					local preMonster = monsterList[n]
+					if preMonster and preMonster:IsValid() then
+						if preMonster.position - position <= range then
+							table_insert(_targets, preMonster)
+						else
+							break
+						end
 					end
 				end
 			end
@@ -305,6 +358,7 @@ function BattleTarget.FindSubRangeTarget( _battleUnit, _targetRes, _player, _tar
 	end
 	return _targets
 end
+FindSubRangeTarget = BattleTarget.FindSubRangeTarget
 
 -- 连接目标
 function BattleTarget.FindSubLinkTarget( _battleUnit, _targetRes, _player, _targets, _targetCount, ... )
@@ -315,18 +369,21 @@ function BattleTarget.FindSubLinkTarget( _battleUnit, _targetRes, _player, _targ
 	local unitType = _targets[1].unitType
 	if unitType == BattleUnitType.MONSTER then
 		local monsterList = _player.monsterList
-		for i = 1, count do
-			if _targetCount > 1 then
-				local monster = _targets[i]
-				local sortIndex = monster.sortIndex
-				local linkCount = 1
-				for n = sortIndex + 1, #monsterList do
-					local monster = monsterList[n]
-					if monster:IsValid() then
-						table_insert(_targets, monster)
-						linkCount = linkCount + 1
-						if linkCount >= _targetCount then
-							break
+		local monsterCount = #monsterList
+		if monsterCount > 0 then
+			for i = 1, count do
+				if _targetCount > 1 then
+					local monster = _targets[i]
+					local sortIndex = monster.sortIndex
+					local linkCount = 1
+					for n = sortIndex + 1, monsterCount do
+						local monster = monsterList[n]
+						if monster:IsValid() then
+							table_insert(_targets, monster)
+							linkCount = linkCount + 1
+							if linkCount >= _targetCount then
+								break
+							end
 						end
 					end
 				end
@@ -335,6 +392,7 @@ function BattleTarget.FindSubLinkTarget( _battleUnit, _targetRes, _player, _targ
 	end
 	return _targets
 end
+FindSubLinkTarget = BattleTarget.FindSubLinkTarget
 
 -- 十字
 function BattleTarget.FindSubCrossTarget( _battleUnit, _targetRes, _player, _targets, _targetCount, ... )
@@ -361,6 +419,7 @@ function BattleTarget.FindSubCrossTarget( _battleUnit, _targetRes, _player, _tar
 
 	return targets
 end
+FindSubCrossTarget = BattleTarget.FindSubCrossTarget
 
 -- 十字格子
 function BattleTarget.FindSubCrossGridTarget( _battleUnit, _targetRes, _player, _targets, _targetCount, ... )
@@ -387,18 +446,7 @@ function BattleTarget.FindSubCrossGridTarget( _battleUnit, _targetRes, _player, 
 
 	return targets
 end
-
-local TargetPlayerSwitcher = 
-{
-	-- 自己
-	[BattlePlayerType.SELF] = function( _player, ... )
-		return _player
-	end,
-	-- 对手
-	[BattlePlayerType.OPPONENT] = function( _player, ... )
-		return gBattleRecord.playerList[_player.playerIndex % 2 + 1]
-	end
-}
+FindSubCrossGridTarget = BattleTarget.FindSubCrossGridTarget
 
 function BattleTarget.GetTargetPlayer( _player, _playerType, ... )
 	local switcher = TargetPlayerSwitcher[_playerType]
@@ -407,5 +455,4 @@ function BattleTarget.GetTargetPlayer( _player, _playerType, ... )
 	end
 	return _player
 end
-
-classend()
+GetTargetPlayer = BattleTarget.GetTargetPlayer

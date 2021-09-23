@@ -1,9 +1,10 @@
 ---
 --- class BattleRecord
 -- @classmod BattleRecord
-class('BattleRecord')
+BattleRecord = xclass('BattleRecord')
 
 local table_insert = table.insert
+local os_clock = os.clock
 local TSRecord = gModel.TSRecord
 local TSRandom = gModel.TSRandom
 
@@ -16,6 +17,7 @@ function BattleRecord:ctor( ... )
 	self.battleSeed = false 									-- 种子
 	self.battleId = false 										-- 战斗id
 	self.battleType = false 									-- 战斗类型
+	self.battleResId = false									-- 战斗配置Id
 	self.isRealTime = false 									-- 是否即时战斗
 	self.playerList = {}										-- 战斗玩家列表，BattlePlayer
 	self.tSnapShot = false										-- 战斗快照
@@ -30,6 +32,7 @@ function BattleRecord:ctor( ... )
 
 	self.isLocal = false
 	self.isCoop = false
+	self.isVideo = false										-- 是否录像
 	self.commonMonsterList = {}									-- 共有怪物列表
 end
 
@@ -69,8 +72,10 @@ function BattleRecord:Load( _tRecord, ... )
 	self.battleSeed = _tRecord.BattleSeed
 	self.battleId = _tRecord.BattleId
 	self.battleType = _tRecord.BattleType
+	self.battleResId = _tRecord.BattleResId or _tRecord.BattleType
 	self.isRealTime = _tRecord.IsRealTime
 	self.frameCount = _tRecord.FrameCount
+	self.isVideo = _tRecord.IsVideo or false
 	-- 战斗结束
 	self.battleResult = BattleResult()
 	if _tRecord.BattleResult then
@@ -81,7 +86,7 @@ function BattleRecord:Load( _tRecord, ... )
 	self.isCoop = self.battleType == BattleType.COOP
 	for i = 1, #_tRecord.PlayerList do
 		local player = BattlePlayer(self.isCoop)
-		player:Load(_tRecord.PlayerList[i])
+		player:Load(_tRecord.PlayerList[i], i)
 		table_insert(self.playerList, player)
 	end
 	-- 快照
@@ -114,14 +119,18 @@ function BattleRecord:Initialize( ... )
 	end
 end
 
-function BattleRecord:Update( _deltaTime, ... )  
+function BattleRecord:Update( _deltaTime, _battleTime, ... )  
 	if self.isCoop then
 		-- 协作模式，特殊处理
 		self:CoopUpdate(_deltaTime)
 	end
 
 	for i = 1, self.playerCount do
-		self.playerList[i]:Update(_deltaTime)
+		self.playerList[i]:Update(_deltaTime, _battleTime)
+	end
+
+	for i = 1, self.playerCount do
+		self.playerList[i]:LateUpdate(_deltaTime, _battleTime)
 	end
 end
 
@@ -139,8 +148,17 @@ function BattleRecord:CoopUpdate( _deltaTime )
 	end
 end
 
-function BattleRecord:GetRealTimeFrameCount()  
-	return self.isRealTime and self.frameCount or BattleConstants.BATTLE_MAX_FRAME
+function BattleRecord:GetFrameCount()
+	local isVideo = self.isVideo
+	if self.isRealTime and not isVideo then
+		return self.frameCount
+	end
+	local frameCount = self.frameCount
+	local localFrameCount = gBattleFrameCount + Constants.BATTLE_SERVER_LEAD_FRAME_COUNT
+	if isVideo or localFrameCount > frameCount then
+		return localFrameCount
+	end
+	return frameCount
 end
 
 function BattleRecord:GetNextFrameCount( ... )  
@@ -269,6 +287,3 @@ function BattleRecord:ExecHeroTalent( _playerId, _frame, _player, _isLogic, ... 
 	end
 	return _player:ExecHeroTalent(_frame, self.isRealTime, _isLogic)
 end
-
-classend()
-export('BattleRecord', BattleRecord)

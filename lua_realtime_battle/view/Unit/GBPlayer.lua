@@ -1,19 +1,25 @@
 ---
 --- class GBPlayer
 -- @classmod GBPlayer
-class('GBPlayer', GBUnit)
+GBPlayer = xclass('GBPlayer', GBUnit)
+
+local os_clock = os.time
+local table_insert = table.insert
+local table_remove = table.remove
+
+local SetBattlePlayerField = LUBattlePlayer.SetBattleField
+local ShowBattlePlayerDamage = LUBattlePlayer.ShowDamage
+local GetGridIndexByPosition = LUBattlePlayer.GetGridIndexByPosition
+local SetBattleUnitId = LUBattleUnit.SetUnitId
 
 ---Constructor
 function GBPlayer:ctor( ... )
-	self.super = Super()
-
 	self.playerId = 0					-- 玩家Id
 	self.player = false 				-- 玩家
-	self.objMonsterRoad = false 		-- 怪物路径物件
-	self.objTopRoad = false				-- 怪物路径顶层
-	self.objBottomRoad = false			-- 怪物路径底层
-	self.objTop	 = false				-- 顶层节点
-	self.objBottom = false 				-- 底层节点
+	self.objTopId = 0
+	self.objBottomId = 0
+	self.objMonsterRoadId = 0
+
 	self.monsterPath = {}				-- 怪物路径，LVector3列表
 
 	self.gbGridList = {}				-- 格子列表
@@ -24,8 +30,14 @@ function GBPlayer:ctor( ... )
 	self.gridBufferIndexMap = {}		-- 格子状态索引Map
 	self.nextBufferIndex = 1			-- 下一个状态索引
 
-	self.pendingGBTowerList = {}			-- 缓冲Tower
+	self.pendingGBTowerList = {}		-- 缓冲Tower
 	self.nextPendingTowerId = 0			-- 下一个缓冲TowerId
+
+	self.hsCount = 0					-- 火山数量
+	self.isHSShowing = false			-- 火山是否显示
+	
+	self.towerStarMap = {}				-- 塔总星级统计
+	self.isTowerStarDirty = false		
 end
 
 function GBPlayer:Destroy( ... )
@@ -53,6 +65,9 @@ function GBPlayer:Destroy( ... )
 		end
 	end
 
+	-- 移出缓存
+	SetBattleUnitId(self.unitId, 0)
+
 	-- 父类销毁
 	self.super:Destroy()
 end
@@ -63,19 +78,20 @@ function GBPlayer:Init( _playerId, _uBattlePlayer, ... )
 	end
 
 	self.playerId = _playerId
-	self.player = gamebattle.gBattleRecord:GetBattlePlayer(_playerId)
-	if not self.player then
+	local player = gamebattle.gBattleRecord:GetBattlePlayer(_playerId)
+	if not player then
 		return false
 	end
 
 	-- 物件
-	self.uBattleUnit = _uBattlePlayer
-	self.uBattleUnit.unitId = self.player.unitId
-	self.objMonsterRoad = _uBattlePlayer.objMonsterRoad
-	self.objTop = _uBattlePlayer.objTop
-	self.objBottom = _uBattlePlayer.objBottom
+	self.player = player
+	_uBattlePlayer.unitId = player.unitId
+	self.unitId = player.unitId
+	self.objTopId = _uBattlePlayer.objTopId
+	self.objBottomId = _uBattlePlayer.objBottomId
+	self.objMonsterRoadId = _uBattlePlayer.objMonsterRoadId
 
-	self.battleUnit = self.player
+	self.battleUnit = player
 	self.gbUnit = self
 	self.gbPlayer = self
 
@@ -84,17 +100,18 @@ function GBPlayer:Init( _playerId, _uBattlePlayer, ... )
 	local pointCount = path.Count
 	for i = 1, pointCount do
 		local point = path[i - 1]
-		local lPoint = LVector3(point.x, point.y, point.z * BattleConstants.BATTLE_ROAD_LENGTH / Constants.PERCENT_MAX)
-		warn(i, lPoint.x, lPoint.y, lPoint.z)
-		table.insert(self.monsterPath, lPoint)
+		local lPoint = { x = point.x, y = point.y, z = point.z * BattleConstants.BATTLE_ROAD_LENGTH / Constants.PERCENT_MAX, w = point.w }
+		-- print(i, lPoint.x, lPoint.y, lPoint.z, lPoint.w)
+		table_insert(self.monsterPath, lPoint)
 	end
 
 	-- 初始化格子列表
 	for i = 1, BattleConstants.BATTLE_MAX_TOWER do
 		local gbGrid = GBGrid()
-		local uBattleGrid = _uBattlePlayer:GetUBattleGrid(i - 1)
-		gbGrid:Init(self, i, uBattleGrid)
+		local gridId = _uBattlePlayer:GetUBattleGridId(i - 1)
+		gbGrid:Init(self, i, gridId)
 		self.gbGridList[i] = gbGrid
+		gGBField.allGBUnits[gbGrid.grid.unitId] = gbGrid
 	end
 
 	-- 初始化塔列表
@@ -102,40 +119,71 @@ function GBPlayer:Init( _playerId, _uBattlePlayer, ... )
 		self.gbTowerList[i] = false
 	end
 
+	-- 初始化塔点数
+	for i = 1, #player.towerPool do
+		local towerResId = player.towerPool[i]
+		self.towerStarMap[towerResId] = { poolIndex = i, totalStar = 0, nextTotalStar = 0, playerId = self.playerId }
+	end
+
+	-- 刷新战场背景
+	local fieldId = player.fieldId
+	fieldId = fieldId == 0 and 1001 or fieldId
+	local isSelfPlayer = gGBField:IsPlayerSelf(self.playerId)
+	SetBattlePlayerField(self.unitId, string.format('field/%d/%d_BattleField_%d_%d', fieldId, fieldId, gGBField.battleRes.fieldType, isSelfPlayer and 2 or 1), 'animation/other/prefabs/')
+
 	return true
 end
 
-function GBPlayer:Update( _deltaTime, ... )
+function GBPlayer:Update( _deltaTime, _battleTime, ... )
 	-- 塔
+	local gbTowerList = self.gbTowerList
 	for i = 1, BattleConstants.BATTLE_MAX_TOWER do
-		local gbTower = self.gbTowerList[i]
+		local gbTower = gbTowerList[i]
 		if gbTower then
-			gbTower:Update(_deltaTime)
+			gbTower:Update(_deltaTime, _battleTime)
 		end
 	end
 
 	-- 怪物
-	local monsterCount = #self.gbMonsterList
+	local gbMonsterList = self.gbMonsterList
+	local monsterCount = #gbMonsterList
 	for i = monsterCount, 1, -1 do
-		local gbMonster = self.gbMonsterList[i]
+		local gbMonster = gbMonsterList[i]
 		if gbMonster then
 			gbMonster:Update(_deltaTime)
 		end
 	end
+
+	-- 火山
+	if self.isHSShowing ~= (self.hsCount > 0) then
+		self.isHSShowing = self.hsCount > 0
+		self:FireUnitEvent(self.isHSShowing and 'OnHuoShanShow' or 'OnHuoShanHide')
+	end
+
+	-- 刷新塔总星级
+	if self.isTowerStarDirty then
+		self.isTowerStarDirty = false
+		for towerResId, towerStar in pairs(self.towerStarMap) do
+			if towerStar.totalStar ~= towerStar.nextTotalStar then
+				towerStar.totalStar = towerStar.nextTotalStar
+				RefreshUIPage('battle', 'UpdateTowerStar', towerStar)
+			end
+		end
+	end
 end
 
-function GBPlayer:AddGBTower( _towerRes, _star, _posIndex, _tower, _addType, _pendingId, ... )
+function GBPlayer:AddGBTower( _towerRes, _star, _posIndex, _tower, _addType, _pendingId, _hasExtraStar, ... )
 	if not _towerRes then
 		return false, 0
 	end
 
-	local uBattleGrid = self.uBattleUnit:GetUBattleGrid(_posIndex - 1)
-	if not uBattleGrid then
+	local gbGrid = self.gbGridList[_posIndex]
+	if not gbGrid then
 		return false, 0
 	end
 
 	local gbTower = GBTower()
-	if not gbTower:Init(_towerRes, _star, _posIndex, uBattleGrid, self, _tower, _addType) then
+	if not gbTower:Init(_towerRes, _star, _posIndex, gbGrid, self, _tower, _addType, nil, _hasExtraStar) then
 		return false, 0
 	end
 	-- 缓冲加入
@@ -149,6 +197,12 @@ function GBPlayer:AddGBTower( _towerRes, _star, _posIndex, _tower, _addType, _pe
 		self.pendingGBTowerList[gbTower.pendingId] = gbTower
 	end
 	self.gbTowerList[_posIndex] = gbTower
+	-- 更新总星数
+	self:AddGBTowerStar(_towerRes.id, _star)
+	-- 火山
+	if _towerRes.birthFlag == BattleUnitFlag.HUOSHAN then
+		self:OnHuoShanChange(true)
+	end
 	return gbTower, gbTower.pendingId
 end
 
@@ -157,7 +211,7 @@ function GBPlayer:RemoveGBTower( _posIndex, ... )
 	if not gbTower then
 		return false, false
 	end
-
+	local towerRes = gbTower.towerRes
 	local unitId = gbTower.battleUnit and gbTower.battleUnit.unitId or false
 	-- 从列表移除
 	self.gbTowerList[gbTower.posIndex] = false
@@ -165,9 +219,14 @@ function GBPlayer:RemoveGBTower( _posIndex, ... )
 	if gbTower.pendingId and gbTower.pendingId ~= 0 then
 		self.pendingGBTowerList[gbTower.pendingId] = nil
 	end
+	-- 更新总星数
+	self:AddGBTowerStar(towerRes.id, -gbTower.star)
 	-- 销毁
 	gbTower:Destroy()
-
+	-- 火山
+	if towerRes.birthFlag == BattleUnitFlag.HUOSHAN then
+		self:OnHuoShanChange(false)
+	end
 	return true, unitId
 end
 
@@ -177,21 +236,18 @@ function GBPlayer:ExchangeGBTower( _dragIndex, _targetIndex, ... )
 	if not gbDragTower or not gbTargetTower then
 		return false
 	end
-	local dragTowerRes = gbDragTower.towerRes
-	local targetTowerRes = gbTargetTower.towerRes
-	local dragTowerStar = gbDragTower.star
-	local targetTowerStar = gbTargetTower.star
-	local dragTowerPendingId = gbDragTower.pendingId
-	local targetTowerPendingId = gbTargetTower.pendingId
 
 	local dragTower = gbDragTower.tower
 	local targetTower = gbTargetTower.tower	
-	-- 移除塔
-	gGBField:RemoveGBTower(self.playerId, _dragIndex)
-	gGBField:RemoveGBTower(self.playerId, _targetIndex)
-	-- 添加塔
-	gGBField:AddGBTower(self.playerId, dragTowerRes, dragTowerStar, _targetIndex, dragTower, BattleTowerAddType.EXCHANGE, dragTowerPendingId)
-	gGBField:AddGBTower(self.playerId, targetTowerRes, targetTowerStar, _dragIndex, targetTower, BattleTowerAddType.EXCHANGE, targetTowerPendingId)
+	local dragGrid = gbDragTower.gbGrid
+	local targetGrid = gbTargetTower.gbGrid
+
+	gbDragTower:Exchange(targetGrid, _targetIndex)
+	gbTargetTower:Exchange(dragGrid, _dragIndex)
+	self.gbTowerList[_targetIndex] = gbDragTower
+	self.gbTowerList[_dragIndex] = gbTargetTower
+
+	gGBField.isTowersDirty = true
 end
 
 function GBPlayer:OnTowerPendingOver( _tower, _pendingId, ... )
@@ -208,8 +264,9 @@ function GBPlayer:OnTowerPendingOver( _tower, _pendingId, ... )
 end
 
 function GBPlayer:GetGBTower( _towerId, ... )
+	local gbTowerList = self.gbTowerList
 	for i = 1, BattleConstants.BATTLE_MAX_TOWER do
-		local gbTower = self.gbTowerList[i]
+		local gbTower = gbTowerList[i]
 		if gbTower and gbTower.tower and gbTower.tower.towerId == _towerId then
 			return gbTower
 		end
@@ -219,6 +276,10 @@ end
 
 function GBPlayer:GetGBTowerByPos( _posIndex, ... )
 	return self.gbTowerList[_posIndex]
+end
+
+function GBPlayer:GetGBGrid( _posIndex, ... )
+	return self.gbGridList[_posIndex]
 end
 
 function GBPlayer:AddGBMonster( _monsterId, ... )
@@ -232,11 +293,11 @@ function GBPlayer:AddGBMonster( _monsterId, ... )
 		return false
 	end
 
-	table.insert(self.gbMonsterList, gbMonster)
+	table_insert(self.gbMonsterList, gbMonster)
 	return gbMonster
 end
 
-function GBPlayer:RemoveGBMonster( _monsterId, ... )
+function GBPlayer:RemoveGBMonster( _monsterId, _leaveFlags, ... )
 	local gbMonster, index = self:GetGBMonster(_monsterId)
 	if not gbMonster then
 		return false, false
@@ -244,17 +305,18 @@ function GBPlayer:RemoveGBMonster( _monsterId, ... )
 
 	local unitId = gbMonster.battleUnit.unitId
 	-- 从列表移除
-	table.remove(self.gbMonsterList, index)
+	table_remove(self.gbMonsterList, index)
 	-- 销毁
-	gbMonster:Destroy()
+	gbMonster:Destroy(_leaveFlags)
 
 	return true, unitId
 end
 
 function GBPlayer:GetGBMonster( _monsterId, ... )
-	local count = #self.gbMonsterList
+	local gbMonsterList = self.gbMonsterList
+	local count = #gbMonsterList
 	for i = 1, count do
-		local gbMonster = self.gbMonsterList[i]
+		local gbMonster = gbMonsterList[i]
 		if gbMonster and gbMonster.monster and gbMonster.monster.monsterId == _monsterId then
 			return gbMonster, i
 		end
@@ -263,7 +325,7 @@ function GBPlayer:GetGBMonster( _monsterId, ... )
 end
 
 -- 伤害跳字预制体
-local DamagePrefabMap = { 'battle/tiaozi_putong', 'battle/tiaozi_baoji', 'battle/tiaozi_zhongdu', 'battle/tiaozi_sp' }
+local DamagePrefabMap = { GameStringType.TZPuTong, GameStringType.TZBaoJi, GameStringType.TZDu, GameStringType.TZPoint, GameStringType.TZHeal, GameStringType.TZTDamage }
 function GBPlayer:UpdateGBMonsterHP( _monsterId, _damage, _damageType, ... )
 	local gbMonster = self:GetGBMonster(_monsterId)
 	if not gbMonster then
@@ -272,8 +334,9 @@ function GBPlayer:UpdateGBMonsterHP( _monsterId, _damage, _damageType, ... )
 	-- 更新血量
 	gbMonster:UpdateHP()
 	-- 跳字
-	if gbMonster.uBattleUnit and not gbMonster:HasSameDamage(_damage, _damageType) then
-		self.uBattleUnit:ShowDamage(gbMonster.uBattleUnit, _damage, DamagePrefabMap[_damageType], nil, nil)
+	local targetUnitId = gbMonster.unitId
+	if targetUnitId ~= 0 and not gbMonster:HasSameDamage(_damage, _damageType) then
+		ShowBattlePlayerDamage(self.unitId, targetUnitId, _damage > 0 and _damage or -_damage, DamagePrefabMap[_damageType], 0, 0)
 	end
 	return true
 end
@@ -282,9 +345,9 @@ function GBPlayer:ShowDamage( _gbUnit, _damage, _damageType, ... )
 	if _gbUnit == self then
 		return
 	end
-	local uBattleUnit = _gbUnit.uBattleUnit
-	if uBattleUnit and not _gbUnit:HasSameDamage(_damage, _damageType) then
-		self.uBattleUnit:ShowDamage(uBattleUnit, _damage, DamagePrefabMap[_damageType], nil, nil)
+	local targetUnitId = _gbUnit.unitId
+	if targetUnitId ~= 0 and not _gbUnit:HasSameDamage(_damage, _damageType) then
+		ShowBattlePlayerDamage(self.unitId, targetUnitId, _damage, DamagePrefabMap[_damageType], 0, 0)
 	end
 end
 
@@ -297,18 +360,18 @@ function GBPlayer:GBMonsterMove( _monsterId, _position, _speed, ... )
 	return true
 end
 
-function GBPlayer:AddGBCollider( _colliderId, ... )
+function GBPlayer:AddGBCollider( _colliderId, _ownerUnitId, _pendingFrameCount, ... )
 	local collider = self.player:GetCollider(_colliderId)
 	if not collider then
 		return false
 	end
 
 	local gbCollider = GBCollider()
-	if not gbCollider:Init(collider, self) then
+	if not gbCollider:Init(collider, self, _ownerUnitId, _pendingFrameCount) then
 		return false
 	end
 
-	table.insert(self.gbColliderList, gbCollider)
+	table_insert(self.gbColliderList, gbCollider)
 	return gbCollider
 end
 
@@ -320,7 +383,7 @@ function GBPlayer:RemoveGBCollider( _colliderId, ... )
 
 	local unitId = gbCollider.battleUnit.unitId
 	-- 从列表移除
-	table.remove(self.gbColliderList, index)
+	table_remove(self.gbColliderList, index)
 	-- 销毁
 	gbCollider:Destroy()
 
@@ -328,9 +391,10 @@ function GBPlayer:RemoveGBCollider( _colliderId, ... )
 end
 
 function GBPlayer:GetGBCollider( _colliderId, ... )
-	local count = #self.gbColliderList
+	local gbColliderList = self.gbColliderList
+	local count = #gbColliderList
 	for i = 1, count do
-		local gbCollider = self.gbColliderList[i]
+		local gbCollider = gbColliderList[i]
 		if gbCollider and gbCollider.collider and gbCollider.collider.colliderId == _colliderId then
 			return gbCollider, i
 		end
@@ -355,18 +419,20 @@ function GBPlayer:UpdateGrid( _gridIndex, _bufferList, ... )
 end
 
 function GBPlayer:GetGridIndexByPosition( _position, ... )
-	return self.uBattleUnit:GetGridIndexByPosition(_position) + 1
+	return GetGridIndexByPosition(self.unitId, _position) + 1
 end
 
 function GBPlayer:OnFrameChasingOver( ... )
-	for i = 1, #self.gbTowerList do
-		local gbTower = self.gbTowerList[i]
+	local gbTowerList = self.gbTowerList
+	for i = 1, #gbTowerList do
+		local gbTower = gbTowerList[i]
 		if gbTower then
 			gbTower:OnFrameChasingOver()
 		end
 	end
-	for i = 1, #self.gbMonsterList do
-		local gbMonster = self.gbMonsterList[i]
+	local gbMonsterList = self.gbMonsterList
+	for i = 1, #gbMonsterList do
+		local gbMonster = gbMonsterList[i]
 		if gbMonster then
 			gbMonster:OnFrameChasingOver()
 		end
@@ -374,15 +440,16 @@ function GBPlayer:OnFrameChasingOver( ... )
 end
 
 function GBPlayer:UpgradeTower( _poolIndex, ... )
+	-- 刷新UI
+	UIUtils.RefreshUIPage('battle', 'Upgrade', { gbPlayer = self, poolIndex = _poolIndex })
 	local towerResId = self.player:GetTowerResIdByPoolIndex(_poolIndex)
 	if not towerResId then
 		return
 	end
-	-- 刷新UI
-	UIUtils.RefreshUIPage('battle', 'Upgrade', { gbPlayer = self, pooIndex = _poolIndex })
 	-- 同类型塔播放升级特效
-	for i = 1, #self.gbTowerList do
-		local gbTower = self.gbTowerList[i]
+	local gbTowerList = self.gbTowerList
+	for i = 1, #gbTowerList do
+		local gbTower = gbTowerList[i]
 		if gbTower and gbTower.towerRes.id == towerResId then
 			-- 升级
 			gbTower:OnTowerUpgrade()
@@ -390,4 +457,22 @@ function GBPlayer:UpgradeTower( _poolIndex, ... )
 	end
 end
 
-classend()
+function GBPlayer:OnHuoShanChange( _isAdd, ... )
+	self.hsCount = self.hsCount + (_isAdd and 1 or -1)
+end
+
+function GBPlayer:AddGBTowerStar( _towerResId, _star )
+	local towerStar = self.towerStarMap[_towerResId]
+	towerStar.nextTotalStar = towerStar.nextTotalStar + _star
+	self.isTowerStarDirty = true
+end
+
+function GBPlayer:UpdateParam( _paramType, _paramValue, ... )
+	local gbTowerList = self.gbTowerList
+	for i = 1, #gbTowerList do
+		local gbTower = gbTowerList[i]
+		if gbTower and gbTower.towerRes.paramList[1] == _paramType then
+			gbTower:UpdateParam(_paramType, _paramValue)
+		end
+	end
+end

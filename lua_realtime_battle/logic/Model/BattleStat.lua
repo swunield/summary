@@ -1,7 +1,7 @@
 ---
 --- class BattleStat
 -- @classmod BattleStat
-class('BattleStat')
+BattleStat = xclass('BattleStat')
 
 ---Constructor
 function BattleStat:ctor( ... )
@@ -63,5 +63,3 @@ end
 function BattleStat:AddPendingMonster( _isAdd, ... )
 	self.pendingMonsterCount = self.pendingMonsterCount + (_isAdd and 1 or -1)
 end
-
-classend()

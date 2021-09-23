@@ -1,25 +1,26 @@
 ---
 --- class GBCollider
 -- @classmod GBCollider
-class('GBCollider', GBUnit)
+GBCollider = xclass('GBCollider', GBUnit)
+
+local CreateBattleCollider = LUBattleCollider.Create
+local EndBattleUnit = LUBattleUnit.End
 
 ---Constructor
 function GBCollider:ctor( ... )
-	self.super = Super()
-
 	self.collider = false		-- 战斗逻辑碰撞体
 end
 
 function GBCollider:Destroy( ... )
-	if self.uBattleUnit then
-		self.uBattleUnit:Stop(true)
+	if self.unitId ~= 0 then
+		EndBattleUnit(self.unitId, GameStringType.OnEndSuccess)
 	end
 
 	-- 父类销毁
 	self.super:Destroy()
 end
 
-function GBCollider:Init( _collider, _gbPlayer, ... )
+function GBCollider:Init( _collider, _gbPlayer, _ownerUnitId, _pendingFrameCount, ... )
 	if not _collider or not _gbPlayer then
 		return false
 	end
@@ -30,26 +31,19 @@ function GBCollider:Init( _collider, _gbPlayer, ... )
 	self.gbPlayer = _gbPlayer
 
 	self:CheckFrameChasing('Init', function( ... )
-		local objCollider = GameObjectPool.INSTANCE:Request(self.collider.colliderRes.prefabName, 'animation/other/prefabs/tower/', true)
-		if not objCollider then
-			return false
-		end
-
-		self.uBattleUnit = UIUtils.GetObjectComponent(objCollider, 'UBattleCollider')
-		self.gameObject = objCollider.gameObject
-		self.transform = objCollider.transform
-		self.uBattleUnit.unitId = self.collider.unitId
-		-- 放入战场
-		GOUtils.SetParent(self.gameObject, self.gbPlayer.objMonsterRoad, false, -1, -1, -1, string.format('collider_%d', self.collider.colliderId))
+		local prefabName = self.collider.colliderRes.prefabName
+		local gbOwnerUnit = gGBField:GetGBUnit(_ownerUnitId)
+		local pendingFrameCount = _pendingFrameCount or 0
+		local pendingTime = pendingFrameCount * Constants.BATTLE_FRAME_TIME
+		local logicPoistion = self.collider.position
+		local posX, posY, zFactor, direction = self:GetPathPosition(logicPoistion)
+		self.unitId = CreateBattleCollider(self.collider.unitId, prefabName, GameStringType.TowerPath, self.gbPlayer.objMonsterRoadId, posX, posY, zFactor, direction, logicPoistion, gbOwnerUnit and gbOwnerUnit.unitId or 0, pendingTime)
 	end)
-
-	-- 初始化位置
-	self:SetPosition(self.collider.position)
 
 	return true
 end
 
-function GBCollider:SetPosition( _position, ... )
+function GBCollider:GetPathPosition( _position )
 	local startPoint = false
 	local endPoint = false
 	local path = self.gbPlayer.monsterPath
@@ -65,11 +59,9 @@ function GBCollider:SetPosition( _position, ... )
 	if not startPoint or not endPoint then
 		return
 	end
+	local zOrderFactor = ((endPoint.x < startPoint.x) or (endPoint.y > startPoint.y)) and -1 or 1
 	local posX = startPoint.x + (endPoint.x - startPoint.x) * (_position - startPoint.z) / (endPoint.z - startPoint.z)
 	local posY = startPoint.y + (endPoint.y - startPoint.y) * (_position - startPoint.z) / (endPoint.z - startPoint.z)
-	self:CheckFrameChasing('SetPosition', function( ... )
-		self.uBattleUnit:SetPosition(posX, posY, 1)
-	end)
+	local direction = startPoint.w
+	return posX, posY, zOrderFactor, direction
 end
-
-classend()

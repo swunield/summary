@@ -2,7 +2,7 @@
 --- class GBCommand
 -- @classmod GBCommand
 
-class('GBCommand')
+GBCommand = xclass('GBCommand')
 
 -- 游戏战斗显示命令中心，战斗开始时实例化且战斗全程唯一，战斗结束时销毁
 local s_instance;
@@ -45,8 +45,8 @@ local GBCommandSwitcher = {
 		return gGBField:AddGBPlayer(_playerId)
 	end,
 	-- 添加塔
-	[GBCommandType.ADDTOWER] = function( _playerId, _towerRes, _star, _posIndex, _tower, _addType, ... )
-		return gGBField:AddGBTower(_playerId, _towerRes, _star, _posIndex, _tower, _addType)
+	[GBCommandType.ADDTOWER] = function( _playerId, _towerRes, _star, _posIndex, _tower, _addType, _hasExtraStar, ... )
+		return gGBField:AddGBTower(_playerId, _towerRes, _star, _posIndex, _tower, _addType, nil, _hasExtraStar)
 	end,
 	-- 移除塔
 	[GBCommandType.REMOVETOWER] = function( _playerId, _posIndex, ... )
@@ -65,8 +65,8 @@ local GBCommandSwitcher = {
 		return gGBField:AddGBMonster(_playerId, _monsterId)
 	end,
 	-- 移除怪物
-	[GBCommandType.REMOVEMONSTER] = function( _playerId, _monsterId, ... )
-		return gGBField:RemoveGBMonster(_playerId, _monsterId)
+	[GBCommandType.REMOVEMONSTER] = function( _playerId, _monsterId, _leaveFlags, ... )
+		return gGBField:RemoveGBMonster(_playerId, _monsterId, _leaveFlags)
 	end,
 	-- 怪物血量
 	[GBCommandType.MONSTERHP] = function( _playerId, _monsterId, _damage, _damageType, ... )
@@ -77,8 +77,8 @@ local GBCommandSwitcher = {
 		return gGBField:MonsterMove(_playerId, _monsterId, _position, _speed)
 	end,
 	-- 添加碰撞
-	[GBCommandType.ADDCOLLIDER] = function( _playerId, _colliderId, ... )
-		return gGBField:AddGBCollider(_playerId, _colliderId)
+	[GBCommandType.ADDCOLLIDER] = function( _playerId, _colliderId, _ownerUnitId, _pendingFrameCount, ... )
+		return gGBField:AddGBCollider(_playerId, _colliderId, _ownerUnitId, _pendingFrameCount)
 	end,
 	-- 移除碰撞
 	[GBCommandType.REMOVECOLLIDER] = function( _playerId, _colliderId, ... )
@@ -86,11 +86,11 @@ local GBCommandSwitcher = {
 	end,
 	-- 点数更新
 	[GBCommandType.POINT] = function( _playerId, _point, _costPoint, ... )
-		return GBMain.INSTANCE():UpdatePoint(_playerId, _point, _costPoint)
+		return gGBMain:UpdatePoint(_playerId, _point, _costPoint)
 	end,
 	-- 战斗结束
 	[GBCommandType.BATTLEEND] = function( _result, _battleId, ... )
-		return GBMain.INSTANCE():OnLogicBattleEnd(_result, _battleId)
+		return gGBMain:OnLogicBattleEnd(_result, _battleId)
 	end,
 	-- 发射
 	[GBCommandType.FIRE] = function( _unitId, _missile, ... )
@@ -121,12 +121,12 @@ local GBCommandSwitcher = {
 	end,
 	-- 快照
 	[GBCommandType.SNAPSHOT] = function( _tSnapShot, ... )
-		return GBMain.INSTANCE():SendSnapShot(_tSnapShot)
+		return gGBMain:SendSnapShot(_tSnapShot)
 	end,
 	-- 特效
-	[GBCommandType.EFFECT] = function( _isAdd, _playerId, _unitId, _effectResId, _targetUnitId, ... )
+	[GBCommandType.EFFECT] = function( _isAdd, _playerId, _unitId, _effectResId, _targetUnitId, _duration, _eventName, ... )
 		if _isAdd and not gGBField.isFrameChasing then
-			return gGBField:AddGBEffect(_playerId, nil, _effectResId, gGBField:GetGBUnit(_unitId), gGBField:GetGBUnit(_targetUnitId))
+			return gGBField:AddGBEffect(_playerId, nil, _effectResId, gGBField:GetGBUnit(_unitId), gGBField:GetGBUnit(_targetUnitId), _duration, _eventName)
 		end
 		return true
 	end,
@@ -134,17 +134,24 @@ local GBCommandSwitcher = {
 	[GBCommandType.BUFFER] = function( _isAdd, _unitId, _bufferRes, ... )
 		return gGBField:OnGBUnitBufferChange(_isAdd, _unitId, _bufferRes, ...)
 	end,
+	-- 标记
+	[GBCommandType.FLAG] = function( _unitId, _unitFlag, _isAdd, ... )
+		return gGBField:OnGBUnitFlagChange(_unitId, _unitFlag, _isAdd)
+	end,
 	-- 英雄天赋CD
-	[GBCommandType.HEROTALENTCD] = function( _playerId, _pastTime, _leftTime, ... )
-		return GBMain.INSTANCE():RefreshHeroTalentCDTime(_playerId, _pastTime, _leftTime)
+	[GBCommandType.HEROTALENTCD] = function( _playerId, _pastTime, _leftTime, _playerUnitId, _eventName, ... )
+		if _eventName then
+			gGBField:FireUnitEvent(_playerUnitId, _eventName)
+		end
+		return gGBMain:RefreshHeroTalentCDTime(_playerId, _pastTime, _leftTime)
 	end,
 	-- 回合开始
-	[GBCommandType.ROUNDSTART] = function( _duration, _roundNum, ... )
-		return GBMain.INSTANCE():OnRoundStart(_duration, _roundNum)
+	[GBCommandType.ROUNDSTART] = function( _duration, _roundNum, _bossIndex, _nextBossId, _roundType, ... )
+		return gGBMain:OnRoundStart(_duration, _roundNum, _bossIndex, _nextBossId, _roundType)
 	end,
 	-- 单位事件
-	[GBCommandType.UNITEVENT] = function( _unitId, _eventName, ... )
-		return gGBField:FireUnitEvent(_unitId, _eventName)
+	[GBCommandType.UNITEVENT] = function( _unitId, _eventName, _eventParam, ... )
+		return gGBField:FireUnitEvent(_unitId, _eventName, _eventParam)
 	end,
 	-- 玩家血量
 	[GBCommandType.PLAYERHP] = function( _playerId, _curHP, _maxHP, _isInit, ... )
@@ -152,11 +159,23 @@ local GBCommandSwitcher = {
 	end,
 	-- 战斗阶段
 	[GBCommandType.PERIOD] = function( _periodName, _param1, _param2, ... )
-		return GBMain.INSTANCE():OnBattlePeriodUpdate(_periodName, _param1, _param2, ...)
+		return gGBMain:OnBattlePeriodUpdate(_periodName, _param1, _param2, ...)
 	end,
 	-- 伤害
 	[GBCommandType.DAMAGE] = function( _unitId, _damage, _damageType, ... )
 		return gGBField:ShowDamage(_unitId, _damage, _damageType)
+	end,
+	-- 引导
+	[GBCommandType.GUIDE] = function( _guideCode, ... )
+		gGuideMgr:CheckCodeNextGuide(_guideCode)
+	end,
+	-- 玩家参数
+	[GBCommandType.PLAYERPARAM] = function( _playerId, _paramType, _paramValue, ... )
+		gGBMain:UpdatePlayerParam(_playerId, _paramType, _paramValue)
+	end,
+	-- 表情
+	[GBCommandType.EMOJI] = function( _playerId, _index, ... )
+		gGBMain:OnPlayerEmoji(_playerId, _index, true)
 	end
 }
 
@@ -168,5 +187,3 @@ function GBCommand:OnCommand( _cmdType, _cmdData1, _cmdData2, _cmdData3, _cmdDat
 	end
 	return false
 end
-
-classend()

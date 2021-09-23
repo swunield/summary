@@ -1,7 +1,7 @@
 ---
 --- class GBField
 -- @classmod GBField
-class('GBField')
+GBField = xclass('GBField')
 
 local table_insert = table.insert
 local table_remove = table.remove
@@ -9,11 +9,16 @@ local table_remove = table.remove
 ---Constructor
 function GBField:ctor( ... )
 	self.playerId = 0				-- 自己玩家Id
-	self.looper = false 			-- 战斗朱循环
+	self.battleType = 0				-- 战斗类型
+	self.fieldType = 0				-- 战场类型
+	self.battleRes = false			-- 战斗配置
+	self.looper = false 			-- 战斗主循环
 	self.uBattle = false 			-- 战场组件
 
 	self.gbPlayerList = {}			-- 玩家列表
 	self.allGBUnits = {}			-- 单位Map
+
+	self.pressTowerIndex = 0		-- 正在拖动塔
 
 	self.effectIdGenerator = 0
 	self.gbEffectList = {}			-- 特效列表
@@ -21,14 +26,11 @@ function GBField:ctor( ... )
 
 	self.gbTime = 0					-- 显示层时间
 	self.isFrameChasing = false		-- 是否正在追帧
+
+	self.isTowersDirty = false		-- 塔列表是否变化
 end
 
 function GBField:Finalize( ... )
-	if self.looper then
-		-- 停止主循环
-		GOUtils.SetLoopCallBack(self.looper.gameObject, nil)
-		self.looper = false
-	end
 	-- 销毁特效
 	for i = 1, #self.gbEffectList do
 		local gbEffect = self.gbEffectList[i]
@@ -40,33 +42,50 @@ function GBField:Finalize( ... )
 	for i = 1, #self.gbPlayerList do
 		self.gbPlayerList[i]:Destroy()
 	end
-	-- 销毁当前类声明的变量，尤其是与UnityObject之间的引用
-	self:ClearContent()
+	-- 销毁战场
+	if self.uBattle then
+		self.uBattle:Destroy()
+	end
+	self.uBattle = nil
 end
 
-function GBField:Initialize( _playerId, _uBattle, ... )
+function GBField:Initialize( _playerId, _battleType, _uBattle, ... )
 	if not _uBattle then
 		return
 	end
 
 	-- 玩家自己的Id
 	self.playerId = _playerId
+	self.battleType = _battleType
+	self.battleRes = GameResMgr.GetBattleRes(_battleType)
+	self.fieldType = self.battleRes.fieldType
 	self.uBattle = _uBattle
 	self.looper = _uBattle.looper
 
-	-- 启动主循环
-	GOUtils.ResetLoop(self.looper.gameObject)
-	GOUtils.SetLoopCallBack(self.looper.gameObject, function( _delta, _time, ... )
-		return GBMain.INSTANCE():Update(_delta, _time)
-	end)
+	-- 特效结束回调
+	LUBattleEffect.OnEffectEndCallBack = function( _effectId, _isHit, ... )
+		local gbEffect = gGBField:GetGBEffect(_effectId)
+		if gbEffect then
+			gbEffect:OnEffectEnd(_isHit)
+		end
+	end 
 end
 
 function GBField:Update( _deltaTime, _time, ... )
 	-- 时间
 	self.gbTime = _time
-
-	for i = 1, #self.gbPlayerList do
-		self.gbPlayerList[i]:Update(_deltaTime)
+	-- 逻辑时间
+	if not gamebattle.gBattleFreezing then
+		local battleTime = gamebattle.gBattleTime
+		for i = 1, #self.gbPlayerList do
+			self.gbPlayerList[i]:Update(_deltaTime, battleTime)
+		end
+	end
+	if self.isTowersDirty then
+		self.isTowersDirty = false
+		if self.pressTowerIndex ~= 0 then
+			UIUtils.RefreshUIPage('battle', 'RefreshTowerPress')
+		end
 	end
 end
 
@@ -102,18 +121,19 @@ function GBField:GetGBPlayer( _playerId, ... )
 	return false
 end
 
-function GBField:AddGBTower( _playerId, _towerRes, _star, _posIndex, _tower, _addType, _pendingId, ... )
+function GBField:AddGBTower( _playerId, _towerRes, _star, _posIndex, _tower, _addType, _pendingId, _hasExtraStar, ... )
 	local gbPlayer = self:GetGBPlayer(_playerId)
 	if not gbPlayer then
 		return false, 0
 	end
-	local gbTower, pendingId = gbPlayer:AddGBTower(_towerRes, _star, _posIndex, _tower, _addType, _pendingId)
+	local gbTower, pendingId = gbPlayer:AddGBTower(_towerRes, _star, _posIndex, _tower, _addType, _pendingId, _hasExtraStar)
 	if not gbTower then
 		return false, 0
 	end
 	if gbTower.battleUnit then
 		self.allGBUnits[gbTower.battleUnit.unitId] = gbTower
 	end
+	self.isTowersDirty = true
 	return gbTower, pendingId
 end
 
@@ -126,6 +146,7 @@ function GBField:RemoveGBTower( _playerId, _posIndex, ... )
 	if result and unitId then
 		self.allGBUnits[unitId] = nil
 	end
+	self.isTowersDirty = true
 	return result
 end
 
@@ -167,12 +188,12 @@ function GBField:AddGBMonster( _playerId, _monsterId, ... )
 	return gbMonster
 end
 
-function GBField:RemoveGBMonster( _playerId, _monsterId, ... )
+function GBField:RemoveGBMonster( _playerId, _monsterId, _leaveFlags, ... )
 	local gbPlayer = self:GetGBPlayer(_playerId)
 	if not gbPlayer then
 		return false
 	end
-	local result, unitId = gbPlayer:RemoveGBMonster(_monsterId)
+	local result, unitId = gbPlayer:RemoveGBMonster(_monsterId, _leaveFlags)
 	if result then
 		self.allGBUnits[unitId] = nil
 	end
@@ -211,12 +232,12 @@ function GBField:MonsterMove( _playerId, _monsterId, _position, _speed, ... )
 	return gbPlayer:GBMonsterMove(_monsterId, _position, _speed)
 end
 
-function GBField:AddGBCollider( _playerId, _colliderId, ... )
+function GBField:AddGBCollider( _playerId, _colliderId, _ownerUnitId, _pendingFrameCount, ... )
 	local gbPlayer = self:GetGBPlayer(_playerId)
 	if not gbPlayer then
 		return false
 	end
-	local gbCollider = gbPlayer:AddGBCollider(_colliderId)
+	local gbCollider = gbPlayer:AddGBCollider(_colliderId, _ownerUnitId, _pendingFrameCount)
 	if not gbCollider then
 		return false
 	end
@@ -253,7 +274,7 @@ function GBField:GenerateEffectId( ... )
 	return self.effectIdGenerator
 end
 
-function GBField:AddGBEffect( _playerId, _gbPlayer, _resId, _gbUnit, _gbTargetUnit, _duration, _endCallback, ... )
+function GBField:AddGBEffect( _playerId, _gbPlayer, _resId, _gbUnit, _gbTargetUnit, _duration, _eventName, _endCallback, ... )
 	local gbPlayer = _gbPlayer or self:GetGBPlayer(_playerId) 
 	if not gbPlayer then
 		return false
@@ -264,15 +285,15 @@ function GBField:AddGBEffect( _playerId, _gbPlayer, _resId, _gbUnit, _gbTargetUn
 	end
 	local singleKey = ''
 	if _gbUnit and effectRes.effectType == EffectType.SINGLE and effectRes.targetType == EffectTargetType.TARGET then
-		singleKey = _gbUnit.battleUnit.unitId .. '-' .. effectRes.id
+		singleKey = _gbUnit.unitId .. '-' .. effectRes.id
 		if self.gbSingleEffectMap[singleKey] then
 			self.gbSingleEffectMap[singleKey]:Restart()
-			return true
+			return self.gbSingleEffectMap[singleKey]
 		end
 	end
 	local effectId = self:GenerateEffectId()
 	local gbEffect = GBEffect(effectId)
-	if not gbEffect:Init(effectRes, _gbUnit, _gbTargetUnit, _duration, _endCallback) then
+	if not gbEffect:Init(effectRes, _gbUnit, _gbTargetUnit, _duration, _eventName, _endCallback) then
 		return false
 	end
 	table_insert(self.gbEffectList, gbEffect)
@@ -294,6 +315,19 @@ function GBField:RemoveGBEffect( _effectId, _stopEffect, ... )
 			break
 		end
 	end
+end
+
+function GBField:GetGBEffect( _effectId, ... )
+	if _effectId == 0 then
+		return false
+	end
+	for i = 1, #self.gbEffectList do
+		local gbEffect = self.gbEffectList[i]
+		if gbEffect.effectId == _effectId then
+			return gbEffect
+		end
+	end
+	return false
 end
 
 function GBField:FireMissile( _unitId, _missile, ... )
@@ -361,12 +395,20 @@ function GBField:OnGBUnitBufferChange( _isAdd, _unitId, _bufferRes, ... )
 	gbUnit:OnBufferChange(_isAdd, _bufferRes)
 end
 
-function GBField:FireUnitEvent( _unitId, _eventName, ... )
+function GBField:OnGBUnitFlagChange( _unitId, _unitFlag, _isAdd, ... )
 	local gbUnit = self:GetGBUnit(_unitId)
 	if not gbUnit then
 		return
 	end
-	gbUnit:FireUnitEvent(_eventName)
+	gbUnit:OnUnitFlagChange(_unitFlag, _isAdd)
+end
+
+function GBField:FireUnitEvent( _unitId, _eventName,  _eventParam, ... )
+	local gbUnit = self:GetGBUnit(_unitId)
+	if not gbUnit then
+		return
+	end
+	gbUnit:FireUnitEvent(_eventName, _eventParam)
 end
 
 function GBField:ShowDamage( _unitId, _damage, _damageType, ... )
@@ -377,4 +419,7 @@ function GBField:ShowDamage( _unitId, _damage, _damageType, ... )
 	gbUnit:ShowDamage(gbUnit, _damage, _damageType)
 end
 
-classend()
+function GBField:Pause( _isPause, ... )
+	local isPause = NilDefault(_isPause, true)
+	self.looper.isLoopEnable = not isPause
+end

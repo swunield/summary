@@ -1,15 +1,13 @@
 ---
 --- class BattleFormula
 -- @classmod BattleFormula
-class('BattleFormula')
+BattleFormula = xclass('BattleFormula')
 
 local math_floor = math.floor
 local math_ceil = math.ceil
 local LMath_AccumulateAdd = LMath.AccumulateAdd
 
----Constructor
-function BattleFormula:ctor( ... )
-end
+local GetValue = false
 
 local FormulaSwitcher = {
 	[BattleFormulaType.ALL] = function( _base, _param, _battleUnit, ... )
@@ -26,15 +24,19 @@ local FormulaSwitcher = {
 	end,
 	-- 塔星级
 	[BattleFormulaType.STAR] = function( _base, _param, _battleUnit, _targetUnit, ... )
-		return GetValue(_base, _battleUnit, _targetUnit) + _battleUnit.star * _param
+		return GetValue(_base, _battleUnit, _targetUnit) + _battleUnit.star * GetValue(_param, _battleUnit, _targetUnit)
 	end,
 	-- 目标塔星级
 	[BattleFormulaType.TARGETSTAR] = function( _base, _param, _battleUnit, _targetUnit, ... )
-		return GetValue(_base, _battleUnit, _targetUnit) + _targetUnit.star * _param
+		return GetValue(_base, _battleUnit, _targetUnit) + _targetUnit.star * GetValue(_param, _battleUnit, _targetUnit)
 	end,
 	-- 塔战斗阶数
 	[BattleFormulaType.TOWERGRADE] = function( _base, _param, _battleUnit, ... )
 		return GetValue(_base, _battleUnit) + _param * (_battleUnit:GetGrade() - 1), true
+	end,
+	-- 攻击
+	[BattleFormulaType.ATTACK] = function( _base, _param, _battleUnit, ... )
+		return _base + _battleUnit:GetAttack() * (GetValue(_param, _battleUnit) / 100)
 	end,
 	-- 塔养成等级
 	[BattleFormulaType.TOWERLEVEL] = function( _base, _param, _battleUnit, ... )
@@ -67,8 +69,7 @@ local FormulaSwitcher = {
 	end,
 	-- PK Boss血量
 	[BattleFormulaType.PK_BOSSHP_REAL] = function( _base, _param, _battleUnit, _targetUnit, _offset, ... )
-		local totalMonsterHP = gBattleLogic:GetTotalMonsterHP(_battleUnit.player)
-		return _base + _param * _offset + math_floor(totalMonsterHP * 0.5)
+		return _base + _param * _offset
 	end,
 	[BattleFormulaType.PK_MONSTERHP] = function( _base, _param, _battleUnit, ... )
 		local roundNum = gBattleLogic.roundNum
@@ -88,9 +89,10 @@ local FormulaSwitcher = {
 		return _base + math_floor(_battleUnit.player.point * _param / Constants.PERCENT_MAX)
 	end,
 	-- 同怪物攻击次数
-	[BattleFormulaType.ATTACKTIMES] = function( _base, _param, _battleUnit, ... )
-		local sameMonsterAttackTimes = _battleUnit.paramMap[BattleParamType.SAMEMONSTERATTACKTIMES] or 0
-		return _base + sameMonsterAttackTimes * _param
+	[BattleFormulaType.SAMEMONSTERATTACKTIMES] = function( _base, _param, _battleUnit, _targetUnit, ... )
+		local sameMonsterAttackTimesParam = _battleUnit.paramMap[BattleParamType.SAMEMONSTERATTACKTIMES]
+		local sameMonsterAttackTimes = sameMonsterAttackTimesParam and sameMonsterAttackTimesParam.value or 0
+		return _base + sameMonsterAttackTimes * GetValue(_param, _battleUnit, _targetUnit)
 	end,
 	-- 怪物数量
 	[BattleFormulaType.MONSTERCOUNT] = function( _base, _param, _battleUnit, _targetUnit, ... )
@@ -99,7 +101,11 @@ local FormulaSwitcher = {
 	end,
 	-- 怪物血量百分比
 	[BattleFormulaType.MONSTERHPPER] = function( _base, _param, _battleUnit, _targetUnit, ... )
-		return math_floor((_base + _param * _targetUnit.maxHP / Constants.PERCENT_MAX) / (_targetUnit.monsterRes.hpScale / Constants.PERCENT_MAX))
+		local scale = 1
+		if _base ~= 0 and _targetUnit.monsterRes.type == MonsterType.BOSS then
+			scale = _base / Constants.PERCENT_MAX
+		end
+		return math_floor((_param * _targetUnit.maxHP / Constants.PERCENT_MAX) / scale)
 	end,
 	-- 伤害衰减
 	[BattleFormulaType.DAMAGEATTENUATION] = function( _base, _param, _battleUnit, _targetUnit, _index, ... )
@@ -123,11 +129,25 @@ local FormulaSwitcher = {
 	end,
 	-- 连接
 	[BattleFormulaType.CONNECT] = function( _base, _param, _battleUnit, _targetUnit, _index, _damage, ... )
-		local curConnectCount = _targetUnit.paramMap[BattleParamType.CURCONNECTCOUNT]
-		if not curConnectCount or curConnectCount <= 1 then
+		local curConnectParam = _targetUnit.paramMap[BattleParamType.CURCONNECTCOUNT]
+		if not curConnectParam or curConnectParam.value <= 1 then
 			return 0
 		end
-		return (GetValue(_base, _battleUnit, _targetUnit) + GetValue(_param, _battleUnit, _targetUnit)) * (curConnectCount - 1), true
+		return (GetValue(_base, _battleUnit, _targetUnit) + GetValue(_param, _battleUnit, _targetUnit)) * (curConnectParam.value - 1), true
+	end,
+	-- 累积击杀
+	[BattleFormulaType.KILLSCORE] = function( _base, _param, _battleUnit, _targetUnit )
+		local player = _battleUnit.player or _battleUnit.owner.player
+		local killScoreParam = player.paramMap[BattleParamType.KILLSCORE]
+		local killScore = killScoreParam and killScoreParam.value or 0
+		return GetValue(_base, _battleUnit, _targetUnit) * math_floor(killScore / _param)
+	end,
+	-- Combo
+	[BattleFormulaType.COMBO] = function( _base, _param, _battleUnit, _targetUnit )
+		local player = _battleUnit.player or _battleUnit.owner.player
+		local comboParam = player.paramMap[BattleParamType.COMBO]
+		local combo = comboParam and comboParam.value or 0
+		return _base + LMath_AccumulateAdd(1, combo) * GetValue(_param, _battleUnit, _targetUnit)
 	end
 }
 
@@ -142,5 +162,4 @@ function BattleFormula.GetValue( _formulaId, _battleUnit, _targetUnit, _param1, 
 	end
 	return formula(formulaRes.base, formulaRes.param, _battleUnit, _targetUnit, _param1, _param2, ...)
 end
-
-classend()
+GetValue = BattleFormula.GetValue

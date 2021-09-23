@@ -1,7 +1,7 @@
 ---
 --- class GBFrameChasingObject
 -- @classmod GBFrameChasingObject
-class('GBFrameChasingObject')
+GBFrameChasingObject = xclass('GBFrameChasingObject')
 
 ---Constructor
 function GBFrameChasingObject:ctor( ... )
@@ -10,8 +10,8 @@ function GBFrameChasingObject:ctor( ... )
 end
 
 function GBFrameChasingObject:Destroy( ... )
-	-- 销毁当前类声明的变量，尤其是与UnityObject之间的引用
-	self:ClearContent()
+	self.actionOrderList = nil
+	self.actionMap = nil
 end
 
 function GBFrameChasingObject:CheckFrameChasing( _key, _callBack, ... )
@@ -41,5 +41,3 @@ function GBFrameChasingObject:OnFrameChasingOver( ... )
 	self.actionOrderList = {}
 	self.actionMap = {}
 end
-
-classend()

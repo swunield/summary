@@ -1,7 +1,7 @@
 ---
 --- class BattlePkLogic
 -- @classmod BattlePkLogic
-class('BattlePkLogic', BattleLogic)
+BattlePkLogic = xclass('BattlePkLogic', BattleLogic)
 
 local table_insert = table.insert
 local math_floor = math.floor
@@ -13,7 +13,7 @@ local TSPendingMonster = gModel.TSPendingMonster
 
 ---Constructor
 function BattlePkLogic:ctor( _isLocal, ... )  
-	self.super = Super(_isLocal, ...)
+	self.super.isLocal = _isLocal or false 	-- 是否本地
 	self.pendingMonsterData = {}
 	self.isBossPeriod = false			-- 是否Boss阶段
 	self.bossIndex = 0					-- 当前回合Boss索引
@@ -30,9 +30,10 @@ function BattlePkLogic:Serialize( ... )
 				tLogic.PendingMonster = {}
 			end
 			local tPending = TSPendingMonster:new{}
+			tPending.PlayerId = playerId
 			tPending.Count = pendingData.monsterCount
 			tPending.LastTime = pendingData.lastMonsterTime
-			tLogic.PendingMonster[playerId] = tPending
+			table_insert(tLogic.PendingMonster, tPending)
 		end 
 	end
 	return tLogic
@@ -46,16 +47,17 @@ function BattlePkLogic:DeSerialize( _tLogic, ... )
 	self.isBossPeriod = _tLogic.BossPeriod == 1
 	self.bossIndex = _tLogic.BossIndex
 	if _tLogic.PendingMonster then
-		for playerId, tPending in pairs(_tLogic.PendingMonster) do
+		for i = 1, #_tLogic.PendingMonster do
+			local tPending = _tLogic.PendingMonster[i]
 			local pendingData = {}
 			pendingData.monsterCount = tPending.Count
 			pendingData.lastMonsterTime = tPending.LastTime
-			self.pendingMonsterData[playerId] = pendingData
+			self.pendingMonsterData[tPending.PlayerId] = pendingData
 		end
 	end
 
 	self:RefreshMonsterHP()
-	self:GenerateMonster()
+	self:GenerateMonster(true)
 
 	gBattleManager:RegisterSnapShotPushEndEvent(function( ... )
 		-- 通知客户端回合开始
@@ -70,8 +72,8 @@ function BattlePkLogic:DeSerialize( _tLogic, ... )
 	end)
 end
 
-function BattlePkLogic:Initialize( _battleType, ... )
-	self.super:Initialize(_battleType)
+function BattlePkLogic:Initialize( _battleType, _battleResId, ... )
+	self.super:Initialize(_battleType, _battleResId)
 
 	-- 怪物路径
 	BattleConstants.BATTLE_ROAD_LENGTH = BattleConstants.BATTLE_PK_ROAD_LENGTH
@@ -92,7 +94,7 @@ function BattlePkLogic:Update( _deltaTime, ... )
 	for i = 1, #self.playerList do
 		local player = self.playerList[i]
 		local pendingData = self.pendingMonsterData[player.playerId]
-		if pendingData.monsterCount > 0 and gBattleTime - pendingData.lastMonsterTime >= 500 then
+		if pendingData.monsterCount > 0 and gBattleTime - pendingData.lastMonsterTime >= 100 then
 			local normalMonsterId = self:GetMonsterResId(MonsterType.NORMAL)
 			player:AddMonster(normalMonsterId)
 			pendingData.lastMonsterTime = gBattleTime
@@ -116,17 +118,26 @@ function BattlePkLogic:OnBattleBegin( ... )
 	self:OnNextRoundStart()
 end
 
+-- boss随机跟上一个不重复的
+function BattlePkLogic:RandomBoss( _lastBossIndex, ... )
+	local index = gBattleRandNum:NextInt(#self.battleRes.bossIdList)
+	if _lastBossIndex ~= 0 and _lastBossIndex == index then
+		return self:RandomBoss(_lastBossIndex)
+	end
+	return index
+end
+
 -- 下一回合开始
 function BattlePkLogic:OnNextRoundStart( ... )
 	self.isBossPeriod = false
 	self.roundNum = self.roundNum + 1
 	self.roundStartWaveNum = self.waveNum + 1
 	self.roundStartTime = gBattleTime
-	self.bossIndex = gBattleRandNum:NextInt(#self.battleRes.bossIdList)
+	self.bossIndex = self:RandomBoss(self.bossIndex)
 	self:GenerateMonster()
 
 	-- 通知客户端回合开始
-	local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.ROUNDSTART, self.roundDuration, 0)
+	local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.ROUNDSTART, 0, 0, self.bossIndex)
 end
 
 -- 校验战斗是否结束
@@ -147,18 +158,29 @@ function BattlePkLogic:CheckBattleEnd( ... )
 	return false
 end
 
-function BattlePkLogic:GenerateMonster( ... )  
+function BattlePkLogic:GenerateMonster( _isSnapShotPushing, ... )
+	if not _isSnapShotPushing then  
+		gBattleFreezing = true
+	end
+
 	local roundDuration = self:GetRoundData(self.roundNum)
 	self.roundDuration = roundDuration
 
+	local delay = 3000
 	for i = MonsterType.NORMAL, MonsterType.ELITE do
 		local monsterType = i
 		local monsterId = self:GetMonsterResId(monsterType)
 		local monsterWaveCount = self:GetMonsterWaveCount(monsterType)
 		local monsterInterval = math_floor(roundDuration / monsterWaveCount)
-		gBattleTimer:RunTask(string.format('GenerateMonster_%d', monsterType), 0, monsterInterval, monsterWaveCount, nil, function( _index, ... )  
+		local monsterGenerator = function( _index, ... )
+			if _index == 0 then
+				gBattleFreezing = false
+			end
 			if _index == monsterWaveCount or (monsterType ~= MonsterType.NORMAL and _index == 0) then
 				return
+			end
+			if monsterType == MonsterType.NORMAL and _index == 0 then
+				local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.ROUNDSTART, roundDuration, 0)
 			end
 			-- 统计总波数
 			if monsterType == MonsterType.NORMAL then
@@ -172,11 +194,17 @@ function BattlePkLogic:GenerateMonster( ... )
 				self.playerList[i]:AddMonster(monsterId)
 			end
 			-- warn('GenerateNormalMonster', self.roundNum, self.roundStartWaveNum, monsterType, _index, self.waveNum, gBattleTime)
-		end)
+		end
+		gBattleTimer:RunTask(string.format('GenerateMonster_%d', monsterType), delay, monsterInterval, monsterWaveCount, monsterGenerator, monsterGenerator)
 	end
 
 	-- 生成BOSS
-	gBattleTimer:RunTask('GenerateBoss', roundDuration, 0, 0, function( ... )  
+	gBattleTimer:RunTask('GenerateBoss', delay + roundDuration, 2000, 1, function( ... )
+		gBattleFreezing = true
+		local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.PERIOD, 'OnBossEnter', self:GetMonsterResId(MonsterType.BOSS, self.bossIndex))
+	end, function( ... )
+		-- 解除冻结
+		gBattleFreezing = false
 		-- 标记Boss阶段
 		self.isBossPeriod = true
 		-- 生成Boss
@@ -209,7 +237,11 @@ function BattlePkLogic:OnMonsterLeave( _monster, _leaveFlags, ... )
 		-- 通知前端更新血量
 		local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.PLAYERHP, player.playerId, player.curHP, player.maxHP, false)
 	end
-
+	local isKilled = _leaveFlags[BattleUnitLeaveType.DIE] == 1
+	if isKilled then
+		-- 累积击杀
+		player:AddParamValue(BattleParamType.KILLSCORE, _monster.monsterRes.killScore)
+	end
 	if self.isBossPeriod then
 		for i = 1, #self.playerList do
 			if self.playerList[i]:GetMonsterCount() ~= 0 then
@@ -219,7 +251,6 @@ function BattlePkLogic:OnMonsterLeave( _monster, _leaveFlags, ... )
 		-- 怪物全部死亡，下一阶段
 		self:OnNextRoundStart()
 	else
-		local isKilled = _leaveFlags[BattleUnitLeaveType.DIE] == 1
 		if isKilled then
 			-- 对手增加一个小怪
 			local normalMonsterId = self:GetMonsterResId(MonsterType.NORMAL)
@@ -246,10 +277,12 @@ function BattlePkLogic:GetTotalMonsterHP( _player, ... )
 	for i = 1, #_player.monsterList do
 		local monster = _player.monsterList[i]
 		if monster.monsterRes.type ~= MonsterType.BOSS then
-			totalHP = totalHP + monster.curHP
+			totalHP = totalHP + (monster.curHP or 0)
 		end
 	end
-	return totalHP
+	return totalHP * 0.5
 end
 
-classend()
+function BattlePkLogic:GetBossTimes( ... )
+	return self.roundNum
+end

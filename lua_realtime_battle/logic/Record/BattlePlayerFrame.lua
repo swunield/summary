@@ -1,7 +1,7 @@
 ---
 --- class BattlePlayerFrame
 -- @classmod BattlePlayerFrame
-class('BattlePlayerFrame')
+BattlePlayerFrame = xclass('BattlePlayerFrame')
 
 local table_insert = table.insert
 local LMQueue = plugins.gameutils.LMQueue
@@ -47,14 +47,17 @@ function BattlePlayerFrame:Init( _player, ... )
 end
 
 function BattlePlayerFrame:GetNextFrame( _moveToNext, ... )
-	if self.nextIndex > #self.frameList then
+	local nextIndex = self.nextIndex
+	local frameList = self.frameList
+	if nextIndex > #frameList then
 		return false
 	end
 	if _moveToNext then
-		self.nextIndex = self.nextIndex + 1
-		return self.frameList[self.nextIndex - 1]
+		nextIndex = nextIndex + 1
+		self.nextIndex = nextIndex
+		return frameList[nextIndex - 1]
 	end
-	return self.frameList[self.nextIndex]
+	return frameList[nextIndex]
 end
 
 function BattlePlayerFrame:GetNextFrameCount( ... )
@@ -97,6 +100,3 @@ end
 function BattlePlayerFrame:HavePendingFrame( ... )
 	return self.pendingFrameQueue.size ~= 0
 end
-
-classend()
-export('BattlePlayerFrame', BattlePlayerFrame)

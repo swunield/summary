@@ -1,7 +1,7 @@
 ---
 --- class BattleMain
 -- @classmod BattleMain
-class('BattleMain')
+BattleMain = xclass('BattleMain')
 
 -- 战斗逻辑入口，战斗开始时实例化且战斗全程唯一，战斗结束时销毁
 local s_instance;
@@ -61,18 +61,13 @@ function BattleMain:Initialize( _battleRecord, _gameCommand, ... )
 	Global.gBattleManager = self.battleMananger
 	gBattleManager:Initialize(_battleRecord)
 
-	-- 快照加载，直接开始战斗
-	if gBattleRecord.frameCount > 0 and gBattleRecord.tSnapShot then
-		gBattleManager:BeginBattle()
-	end
-
 	return true
 end
 
 -- 战斗逻辑主循环
 function BattleMain:Update( _deltaTime, ... )  
 	if not gBattleManager then
-		return
+		return 0
 	end
 
 	-- 管理器
@@ -90,17 +85,19 @@ function BattleMain:SendCommand( _cmdType, _cmdData1, _cmdData2, _cmdData3, _cmd
 end
 
 -- 战斗模拟入口，后端使用
-function BattleMain:SimulateBattle( _battleRecordString, _battleRecordTable, ... )  
-	local battleRecordTable = _battleRecordTable or String2Table(_battleRecordString)
-	if not battleRecordTable then
-		return nil
+function BattleMain:SimulateBattle( _battleRecordString, _tBattleRecord, _battleRecord, ... ) 
+	local battleRecord = _battleRecord
+	if not battleRecord then
+		local battleRecordTable = _tBattleRecord or String2Table(_battleRecordString)
+		if not battleRecordTable then
+			return nil
+		end
+		
+		-- 从Table中加载战斗数据
+		battleRecord = BattleRecord()
+		battleRecord:Load(battleRecordTable)
+		battleRecord.isRealTime = false
 	end
-	
-	-- 从Table中加载战斗数据
-	local battleRecord = BattleRecord()
-	battleRecord:Load(battleRecordTable)
-	battleRecord.isRealTime = false
-	
 	-- 战斗模拟初始化
 	self:Initialize(battleRecord)
 
@@ -118,5 +115,4 @@ function BattleMain:SimulateBattle( _battleRecordString, _battleRecordTable, ...
 	return gBattleResult.instanceContent
 end
 
-classend()
-export("BattleMain", BattleMain)
+export('BattleMain', BattleMain)

@@ -6,10 +6,11 @@ require 'TBinaryProtocol'
 --- class BattleManager
 -- @classmod BattleManager
 -- 战斗管理器
-class('BattleManager')
+BattleManager = xclass('BattleManager')
 
 local table_insert = table.insert
 local os_clock = os.clock
+local math_floor = math.floor
 
 local TSSnapShot = gModel.TSSnapShot
 
@@ -34,7 +35,6 @@ function BattleManager:ctor( ... )
 
 	self.bufferIdGenerator = 0					-- 状态ID生成器
 
-	self.isSnapShotTaking = false				-- 是否抓取快照中
 	self.isSnapShotPushing = false				-- 是否快照推送中
 	self.snapShotPushEndEventList = {}			-- 快照推送结束事件列表
 	self.isFrameChasing = false					-- 是否追帧
@@ -71,9 +71,12 @@ function BattleManager:Finalize( ... )
 	Global.gBattleFrameCount = nil
 	Global.gBattleType = nil
 	Global.gBattleFinalizing = nil
+	Global.gBattleFreezing = nil
 end
 
 function BattleManager:Initialize( _battleRecord, ... )  
+	Global.gBattleFreezing = false
+
 	-- 战斗时间
 	self.battleTime = 0
 	Global.gBattleTime = 0
@@ -97,7 +100,7 @@ function BattleManager:Initialize( _battleRecord, ... )
 	-- 初始化战斗逻辑
 	self.battleLogic = self:BuildBattleLogic(_battleRecord.battleType, _battleRecord.isLocal)
 	Global.gBattleLogic = self.battleLogic
-	gBattleLogic:Initialize(_battleRecord.battleType)
+	gBattleLogic:Initialize(_battleRecord.battleType, _battleRecord.battleResId)
 
 	-- 初始化战斗记录器
 	self.battleRecord = _battleRecord
@@ -110,9 +113,9 @@ end
 
 function BattleManager:Update( _deltaTime, ... )  
 	-- 修正战斗状态
-	self:CheckNextBattleState()
+	local battleState = self:CheckNextBattleState()
 
-	if self.battleState ~= BattleState.BATTLEING then
+	if battleState ~= BattleState.BATTLEING then
 		return 0
 	end
 
@@ -124,74 +127,76 @@ function BattleManager:Update( _deltaTime, ... )
 		battleRecord.tSnapShot = false
 	end
 
-	self.updateTime = self.updateTime + _deltaTime
+	local updateTime = self.updateTime + _deltaTime
 	local updateDeltaTime = self.updateDeltaTime
 	local battleFrameTime = Constants.BATTLE_FRAME_TIME
 	local isRealTime = battleRecord.isRealTime
+	local realFrameCount = battleRecord:GetFrameCount()
+	local battleFrameCount = self.battleFrameCount
+	local battleTime = self.battleTime
 
-	if isRealTime then
-		self.isFrameChasing = false
-		-- 实时战斗需要根据帧差修复帧，将前后端帧差维持在10帧
-		local frameDistance = battleRecord:GetRealTimeFrameCount() - self.battleFrameCount
-		if frameDistance > Constants.BATTLE_SERVER_LEAD_FRAME_COUNT + Constants.BATTLE_FPS then
-			-- 暴力追帧
-			self.updateTime = (frameDistance - Constants.BATTLE_SERVER_LEAD_FRAME_COUNT) * updateDeltaTime
+	-- 实时战斗需要根据帧差修复帧，将前后端帧差维持在10帧
+	local frameDistance = realFrameCount - battleFrameCount
+	if frameDistance > Constants.BATTLE_SERVER_LEAD_FRAME_COUNT + Constants.BATTLE_FRAME_PACKAGE_LENGTH then
+		-- 暴力追帧
+		updateTime = (frameDistance - Constants.BATTLE_SERVER_LEAD_FRAME_COUNT) * updateDeltaTime
+		if not self.isFrameChasing then
 			-- 通知前端开始追帧
 			local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.FRAMECHASING, true)
 			self.isFrameChasing = true
-			-- warn('暴力追帧开始', self.battleFrameCount, frameDistance)
-		elseif frameDistance > Constants.BATTLE_SERVER_LEAD_FRAME_COUNT + 1 and updateDeltaTime == battleFrameTime then
-			-- 平缓追帧
-			updateDeltaTime = battleFrameTime - 4
-			self.updateDeltaTime = updateDeltaTime
-			-- 通知前端停止追帧
-			local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.FRAMECHASING, false)
-			self.isFrameChasing = false
-			-- warn('平缓追帧开始', self.battleFrameCount, frameDistance)
-		elseif frameDistance <= Constants.BATTLE_SERVER_LEAD_FRAME_COUNT + 1 and updateDeltaTime ~= battleFrameTime then
-			-- 正常帧
-			updateDeltaTime = battleFrameTime
-			self.updateDeltaTime = updateDeltaTime
-			-- 通知前端停止追帧
-			local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.FRAMECHASING, false)
-			self.isFrameChasing = false
-			-- warn('追帧结束', self.battleFrameCount, frameDistance)
 		end
-	elseif battleRecord.frameCount > self.battleFrameCount then
-		self.updateTime = (battleRecord.frameCount - self.battleFrameCount) * updateDeltaTime
-		local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.FRAMECHASING, true)
-		self.isFrameChasing = true
-	elseif self.isFrameChasing then
-		local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.FRAMECHASING, false)
-		self.isFrameChasing = false
+		-- warn('暴力追帧开始', battleFrameCount, frameDistance)
+	elseif frameDistance > Constants.BATTLE_SERVER_LEAD_FRAME_COUNT + 1 and updateDeltaTime == battleFrameTime then
+		-- 平缓追帧
+		updateDeltaTime = battleFrameTime - 8
+		self.updateDeltaTime = updateDeltaTime
+		-- 通知前端停止追帧
+		if self.isFrameChasing then
+			local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.FRAMECHASING, false)
+			self.isFrameChasing = false
+		end
+		-- warn('平缓追帧开始', battleFrameCount, frameDistance)
+	elseif frameDistance <= Constants.BATTLE_SERVER_LEAD_FRAME_COUNT and updateDeltaTime ~= battleFrameTime then
+		-- 正常帧
+		updateDeltaTime = battleFrameTime
+		self.updateDeltaTime = updateDeltaTime
+		-- 通知前端停止追帧
+		if self.isFrameChasing then
+			local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.FRAMECHASING, false)
+			self.isFrameChasing = false
+		end
+		-- warn('追帧结束', battleFrameCount, frameDistance)
+	else
+		if self.isFrameChasing then
+			local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.FRAMECHASING, false)
+			self.isFrameChasing = false
+		end
 	end
 	-- 逻辑主循环
 	local realDeltaTime = 0
-	while (self.updateTime >= updateDeltaTime) do
+	while (updateTime >= updateDeltaTime) do
 		-- 逻辑帧校验战斗状态
-		if self.battleState ~= BattleState.BATTLEING then
-			self.updateTime = 0
+		if battleState ~= BattleState.BATTLEING then
+			updateTime = 0
 			break
 		end
 		-- 逻辑帧超过即时战斗最大帧，则需要缓冲，等待收到后续帧再执行
-		if self.battleFrameCount >= battleRecord:GetRealTimeFrameCount() then 
+		if isRealTime and battleFrameCount >= realFrameCount then 
 			self:ChangeBattleState(BattleState.PENDING)
 			break
 		end
 
-		self.updateTime = self.updateTime - updateDeltaTime
-		realDeltaTime = realDeltaTime + battleFrameTime
+		updateTime = updateTime - updateDeltaTime
+		-- realDeltaTime = realDeltaTime + battleFrameTime
 		
 		-- 战斗逻辑帧
-		self.battleFrameCount = self.battleFrameCount + 1
-		self.battleTime = self.battleTime + battleFrameTime 
-		Global.gBattleTime = self.battleTime
-		Global.gBattleFrameCount = self.battleFrameCount
+		battleFrameCount = battleFrameCount + 1
+		Global.gBattleFrameCount = battleFrameCount
 
 		-- 战斗记录中，取出当前应该执行的所有帧
-		while true do
+		while true do 
 			local nextFrameCount, nextFramePlayer = battleRecord:GetNextFrameCount()
-			if nextFrameCount > self.battleFrameCount then
+			if nextFrameCount > battleFrameCount then
 				break
 			end
 			-- 执行战斗帧
@@ -202,39 +207,38 @@ function BattleManager:Update( _deltaTime, ... )
 		-- 战斗计时器
 		gBattleTimer:Update(battleFrameTime)
 
-		-- 战斗逻辑
-		gBattleLogic:Update(battleFrameTime)
+		if not gBattleFreezing then
+			-- 战斗时间
+			battleTime = battleTime + battleFrameTime 
+			Global.gBattleTime = battleTime
+			realDeltaTime = realDeltaTime + battleFrameTime
 
-		-- 战斗录像
-		battleRecord:Update(battleFrameTime)
+			-- 战斗逻辑
+			gBattleLogic:Update(battleFrameTime, battleTime)
+
+			-- 战斗录像
+			battleRecord:Update(battleFrameTime, battleTime)
+		end
 
 		-- 检查战斗是否结束
 		if gBattleLogic:CheckBattleEnd() then
-			-- gBattleManager:AddBattleLog(string.format('Battle End Frame[%d] WinPlayer[%d] RoundNum[%d]', gBattleFrameCount, gBattleResult.winPlayerId, gBattleResult.roundNum))
+			warn(string.format('Battle End Frame[%d] WinPlayer[%d] RoundNum[%d]', gBattleFrameCount, gBattleResult.winPlayerId, gBattleResult.roundNum))
 			-- gBattleManager:AddBattleLog('log_end', true)
 
 			self:ChangeBattleState(BattleState.END)
 		end
 
 		-- 修正战斗状态
-		self:CheckNextBattleState()
-
-		-- 客户端单机模式下，且非追帧时，每10秒上报一次快照
-		local sendSnapShot = true
-		if self.isClientMode and not self.isFrameChasing and self.battleFrameCount % 500 == 0 then
-			self.isSnapShotTaking = true
-			sendSnapShot = not isRealTime
-		end
-
-		if self.isSnapShotTaking and not battleRecord:HavePendingFrame() then
-			-- 无缓冲帧的时抓取快照
-			self.isSnapShotTaking = false
-			self:TakeSnapShot(sendSnapShot)
-		end
+		battleState = self:CheckNextBattleState(battleState)
 	end
 
+	-- 同步时间
+	self.updateTime = updateTime
+	self.battleFrameCount = battleFrameCount
+	self.battleTime = battleTime
+
 	-- 修正战斗状态
-	self:CheckNextBattleState()
+	self:CheckNextBattleState(battleState)
 
 	return realDeltaTime
 end
@@ -245,7 +249,7 @@ function BattleManager:BeginBattle( ... )
 end
 
 function BattleManager:ChangeBattleState( _state )  
-	if _state == self.nextBattleState then
+	if _state == self.nextBattleState or self.nextBattleState == BattleState.END then
 		return
 	end
 	self.nextBattleState = _state
@@ -276,18 +280,21 @@ local BattleStateSwitcher = {
 	end
 }
 
-function BattleManager:CheckNextBattleState( ... )  
-	if self.nextBattleState == self.battleState then
-		return
+function BattleManager:CheckNextBattleState( _battleState, ... )  
+	local battleState = _battleState or self.battleState
+	if self.nextBattleState == battleState then
+		return battleState
 	end
 
-	self.lastBattleState = self.battleState
-	self.battleState = self.nextBattleState
+	self.lastBattleState = battleState
+	battleState = self.nextBattleState
+	self.battleState = battleState
 
-	local switcher = BattleStateSwitcher[self.battleState]
+	local switcher = BattleStateSwitcher[battleState]
 	if switcher then
 		switcher(self.lastBattleState)
 	end
+	return battleState
 end
 
 -- 战斗帧处理器
@@ -314,21 +321,28 @@ local BattleFrameSwitcher = {
 	end,
 	-- 表情
 	[BattleFrameType.EMOJI] = function( _playerId, _frame, _player, ... )
+		local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.EMOJI, _playerId, _frame.param1)
+		return true
 	end,
+	-- 引导
+	[BattleFrameType.GUIDE] = function( _playerId, _frame, _player, ... )
+		local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.GUIDE, _frame.param1)
+		return true
+	end
 }
 
 function BattleManager:ExecBattleFrame( _playerId, _frame, _player, ... )
 	if not _frame then
 		return
 	end
-	-- gBattleManager:AddBattleLog(string.format('ExecBattleFrame Frame[%d] Player[%s] Type[%d]', self.battleFrameCount, tostring(_playerId), _frame.frameType))
+	-- gBattleManager:AddBattleLog(string.format('ExecBattleFrame Frame[%d] Player[%s] Type[%d]', gBattleFrameCount, tostring(_playerId), _frame.frameType))
 	local switcher = BattleFrameSwitcher[_frame.frameType]
 	if switcher then
 		local result = false
 		local code = -1
 		result, code = switcher(_playerId, _frame, _player)
 		if not result and code ~= 0 then
-			error(string.format('ExecBattleFrame Error %d %d %d %d %s %s', code, _playerId, _frame.frameType, _frame.frameCount, _frame.param1, _frame.param2))
+			warn(string.format('ExecBattleFrame Error %d %d %d %d %s %s', code, _playerId, _frame.frameType, _frame.frameCount, _frame.param1, _frame.param2))
 		end
 	end
 end
@@ -337,6 +351,8 @@ function BattleManager:OnBattleBegin( ... )
 	self.battleFrameCount = 0
 	self.battleTime = 0
 	self.updateTime = 0
+	Global.gBattleFrameCount = 0
+	Global.gBattleTime = 0
 
 	-- 触发战斗开始
 	gBattleLogic:OnBattleBegin()
@@ -344,8 +360,8 @@ end
 
 function BattleManager:OnBattleEnd( ... )  
 	-- 最后一帧
-	gBattleResult:SetFrameCount(self.battleFrameCount)
-	print('OnBattleEnd', gBattleResult.winPlayerId, gBattleResult.frameCount, gBattleResult.roundNum, gBattleRandNum:NextInt(), gBattleRandNum:GetCount(), gBattleRandNum:GetPoolNum())
+	gBattleResult:SetFrameCount(gBattleFrameCount)
+	warn('OnBattleEnd', gBattleResult.winPlayerId, gBattleResult.frameCount, gBattleResult.roundNum, gBattleRandNum:NextInt(), gBattleRandNum:GetCount(), gBattleRandNum:GetPoolNum())
 
 	-- 通知前端战斗结束
 	local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.BATTLEEND, gBattleResult, gBattleRecord.battleId)
@@ -379,7 +395,10 @@ local BattleLogicSwitcher = {
 	end,
 	[BattleType.COOP] = function( _isLocal, ... )
 		return BattleCoopLogic(_isLocal)
-	end
+	end,
+	[BattleType.PKRANDOM] = function( _isLocal, ... )
+		return BattlePkLogic(_isLocal)
+	end,
 }
 
 function BattleManager:BuildBattleLogic( _battleType, _isLocal, ... )
@@ -395,14 +414,13 @@ function BattleManager:SetBattleRecordFrameCount( _frameCount, ... )
 	gBattleRecord.frameCount = _frameCount
 
 	if self.battleTime == 0 then
-		-- 开始战斗
-		self:BeginBattle()
-		return
+		return true
 	end
 
 	if self.battleState == BattleState.PENDING and self.lastBattleState == BattleState.BATTLEING then
 		self:ChangeBattleState(BattleState.BATTLEING)
 	end
+	return false
 end
 
 -- 生成状态ID
@@ -412,29 +430,24 @@ function BattleManager:GenerateBufferId()
 end
 
 -- 获取快照
-function BattleManager:TakeSnapShot( _sendSnapShot, ... )
-	if not self.isClientMode then
-		return false
-	end
-	local time = os_clock()
+function BattleManager:TakeSnapShot( ... )
+	local time = Time.realtimeSinceStartup
 	local tSnapShot = TSSnapShot:new{}
 	tSnapShot.FrameCount = gBattleFrameCount
+	tSnapShot.BattleTime = gBattleTime
 	tSnapShot.BufferIdGenerator = self.bufferIdGenerator
 	tSnapShot.Record = gBattleRecord:Serialize()
 	tSnapShot.Timer = gBattleTimer:Serialize()
 	tSnapShot.Logic = gBattleLogic:Serialize()
-	warn(string.format('TakeSnapShot CostTime[%.2fms] Frame[%d]', (os_clock() - time) * 1000, gBattleFrameCount))
-	
-	-- 通知客户端发送快照
-	local _ = _sendSnapShot and G_SendGBCommand and G_SendGBCommand(GBCommandType.SNAPSHOT, tSnapShot)
+	-- warn(string.format('TakeSnapShot CostTime[%.4fms] Frame[%d]', (Time.realtimeSinceStartup - time), gBattleFrameCount))
 
-	local transport = TMemoryBuffer:new{}
-    local protocol = TBinaryProtocolFactory:getProtocol(transport)
-    tSnapShot:write(protocol)
-    local buffer = Slua.ToBytes(transport.buffer)
-    local detail = gameutils.JSON:encode(tSnapShot)
-    warn(string.format('TakeSnapShot Frame[%d] Pending[%s] Length[%d] MD5[%s]', gBattleFrameCount, tostring(gBattleRecord:HavePendingFrame()), buffer.Length, GameSecurity.ComputeStringMd5(detail)))
-    warn('TakeSnapShot Detail ' .. detail)
+	-- local transport = TMemoryBuffer:new{}
+ --    local protocol = TBinaryProtocolFactory:getProtocol(transport)
+ --    tSnapShot:write(protocol)
+ --    local buffer = Slua.ToBytes(transport.buffer)
+ --    local detail = gameutils.JSON:encode(tSnapShot)
+ --    warn(string.format('TakeSnapShot Frame[%d] Pending[%s] Length[%d] MD5[%s]', gBattleFrameCount, tostring(gBattleRecord:HavePendingFrame()), buffer.Length, GameSecurity.ComputeStringMd5(detail)))
+ --    warn('TakeSnapShot Detail ' .. detail)
 	return tSnapShot
 end
 
@@ -448,7 +461,7 @@ function BattleManager:PushSnapShot( _tSnapShot, ... )
 	local time = os_clock()
 	self.battleFrameCount = _tSnapShot.FrameCount
 	self.bufferIdGenerator = _tSnapShot.BufferIdGenerator
-	self.battleTime = Constants.BATTLE_FRAME_TIME * self.battleFrameCount
+	self.battleTime = _tSnapShot.BattleTime
 	Global.gBattleTime = self.battleTime
 	Global.gBattleFrameCount = self.battleFrameCount
 	gBattleLogic:DeSerialize(_tSnapShot.Logic)
@@ -490,11 +503,9 @@ function BattleManager:AddBattleLog( _log, _isSignal, ... )
 	if _isSignal then
 		log(self.battleId, _log)
 	else
-		log(self.battleId, string.format('[%d] %s\n', self.battleFrameCount, _log))
+		log(self.battleId, string.format('[%d] %s\n', gBattleFrameCount, _log))
 	end
 	-- if self.curSingleResult then
 	-- 	table.insert(self.curSingleResult.battleLogList, _log)
 	-- end
 end
-
-classend()

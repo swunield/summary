@@ -7,49 +7,55 @@ Global.gModel = plugins.model
 use 'BattleEnums'
 use 'BattleConstants'
 
-use 'BattleMain'
-use 'BattleManager'
+require 'BattleMain'
+require 'BattleManager'
 
-use 'Model/BattleCommon'
-use 'Model/BattleFlag'
-use 'Model/BattleStat'
-use 'Model/BattleResult'
-use 'Model/BattleTimer'
-use 'Trigger/BattleTriggerParam'
-use 'Trigger/BattleTriggerAction'
-use 'Trigger/BattleTrigger'
-use 'AI/BattlePlayerAI'
-use 'Unit/BattleMissile'
-use 'Unit/BattleUnit'
-use 'Unit/BattleTower'
-use 'Unit/BattleHero'
-use 'Unit/BattleMonster'
-use 'Unit/BattleGrid'
-use 'Unit/BattleCollider'
-use 'Unit/BattlePlayer'
-use 'Record/BattleFrame'
-use 'Record/BattlePlayerFrame'
-use 'Record/BattleRecord'
-use 'Logic/BattlePkDistance'
-use 'Logic/BattleCoopDistance'
-use 'Logic/BattleLogic'
-use 'Logic/BattlePkLogic'
-use 'Logic/BattleCoopLogic'
-use 'Buffer/BattleBuffer'
-use 'Buffer/BattleBufferLayer'
+require 'Model/BattleCommon'
+require 'Model/BattleFlag'
+require 'Model/BattleStat'
+require 'Model/BattleResult'
+require 'Model/BattleTimer'
+require 'Trigger/BattleTriggerParam'
+require 'Unit/BattleMissile'
+require 'Trigger/BattleTriggerAction'
+require 'Trigger/BattleTrigger'
+require 'AI/BattlePlayerAI'
+require 'Skill/BattleSkill'
+require 'Skill/BattleSkill_Dice'
+require 'Skill/BattleSkill_StarBall'
+require 'Skill/BattleSkill_Kill'
+require 'Unit/BattleUnit'
+require 'Unit/BattleTower'
+require 'Unit/BattleHero'
+require 'Unit/BattleMonster'
+require 'Unit/BattleGrid'
+require 'Unit/BattleCollider'
+require 'Unit/BattlePlayer'
+require 'Record/BattleFrame'
+require 'Record/BattlePlayerFrame'
+require 'Record/BattleRecord'
+require 'Logic/BattlePkDistance'
+require 'Logic/BattleCoopDistance'
+require 'Logic/BattleLogic'
+require 'Logic/BattlePkLogic'
+require 'Logic/BattleCoopLogic'
+require 'Buffer/BattleBuffer'
+require 'Buffer/BattleBufferLayer'
 
-use 'BattleFormula'
-use 'BattleTarget'
+require 'BattleFormula'
+require 'BattleTarget'
 
 -- 全局定义
 Global.gameutils = plugins.gameutils
 Global.gameres = plugins.gameres
 Global.PERF = function( ... ) end
 Global.PERFEND = function( ... ) end
+Global.Profiler_Begin = function( ... ) end
+Global.Profiler_End = function( ... ) end
 
 -- print开关
--- Global.print = function( ... ) end
--- Global.log = function( ... ) end
+Global.print = function( ... ) end
+Global.log = function( ... ) end
 
 Global.gBattleRandNum = nil				-- 战斗随机数
 Global.gBattleManager = nil				-- 战斗管理器
@@ -67,6 +73,7 @@ Global.BattleMonsterDistance = nil		-- 战斗怪物距离
 Global.G_SendGBCommand = nil
 Global.gSnapShotPushing = nil			-- 快照推送中
 Global.gBattleFinalizing = nil			-- 战斗销毁中
+Global.gBattleFreezing = nil			-- 战斗冻结中
 
 -- 战斗版本号
-Global.BattleVersion = 1
+Global.BattleVersion = 8

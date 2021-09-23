@@ -1,7 +1,7 @@
 ---
 --- class BattleFrame
 -- @classmod BattleFrame
-class('BattleFrame')
+BattleFrame = xclass('BattleFrame')
 
 local table_insert = table.insert
 
@@ -40,8 +40,7 @@ end
 local FrameActionSwitcher = {
 	[BattleFrameActionType.ADDTOWER] = function( self, _player, _towerRes, _star, _posIndex, _pendingId, ... )
 		-- 添加逻辑塔
-		local tower = _player:AddTower(_towerRes, _star, _posIndex, self.frameType == BattleFrameType.ROLL)
-		local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.PENDINGTOWER, _player.playerId, tower, _pendingId)
+		local tower = _player:AddTower(_towerRes, _star, _posIndex, self.frameType == BattleFrameType.ROLL, _pendingId)
 	end,
 	[BattleFrameActionType.REMOVETOWER] = function( self, _player, _posIndex, _leaveFlags, ... )
 		-- 移除塔
@@ -73,17 +72,15 @@ function BattleFrame:AddFrameAction( _actionType, _player, _param1, _param2, _pa
 end
 
 function BattleFrame:OnPendingOver( ... )
-	if #self.actionList == 0 then
+	local actionList = self.actionList
+	if #actionList == 0 then
 		return
 	end
-	for i = 1, #self.actionList do
-		local action = self.actionList[i]
+	for i = 1, #actionList do
+		local action = actionList[i]
 		local switcher = FrameActionSwitcher[action.actionType]
 		if switcher then
 			switcher(self, action.player, action.param1, action.param2, action.param3, action.param4)
 		end
 	end
 end
-
-classend()
-export('BattleFrame', BattleFrame)

@@ -1,7 +1,7 @@
 ---
 --- class BattleTriggerAction
 -- @classmod BattleTriggerAction
-class('BattleTriggerAction')
+BattleTriggerAction = xclass('BattleTriggerAction')
 
 local math_floor = math.floor
 local os_clock = os.clock
@@ -28,6 +28,10 @@ local TriggerActionSwitcher =
 	-- 额外伤害
 	[BattleActionType.EXTRADAMAGE] = function( self, _triggerParam, _targetUnits, ... )
 		return self:ExecExtraDamage(_triggerParam, _targetUnits)
+	end,
+	-- 额外星级
+	[BattleActionType.EXTRASTAR] = function( self, _triggerParam, _targetUnits, ... )
+		return self:ExecExtraStar(_triggerParam, _targetUnits)
 	end,
 	-- 状态
 	[BattleActionType.BUFFER] = function( self, _triggerParam, _targetUnits, ... )
@@ -76,6 +80,14 @@ local TriggerActionSwitcher =
 	-- 偷取SP
 	[BattleActionType.STEALSP] = function( self, _triggerParam, _targetUnits, ... )
 		return self:ExecStealSP(_triggerParam, _targetUnits)
+	end,
+	-- 技能
+	[BattleActionType.SKILL] = function( self, _triggerParam, _targetUnits, ... )
+		return self:ExecSkill(_triggerParam, _targetUnits)
+	end,
+	-- 移除行为
+	[BattleActionType.REMOVEACTION] = function( self, _triggerParam, _targetUnits, ... )
+		return self:ExecRemoveAction(_triggerParam, _targetUnits)
 	end
 }
 
@@ -100,9 +112,9 @@ function BattleTriggerAction:FireTrigger( _triggerParam, ... )
 		if switcher(self, _triggerParam, targetUnits) then
 			-- 行为执行成功
 			local eventName = self.actionRes.eventName
-			if eventName ~= '' then
+			if eventName ~= 0 then
 				-- 通知前端单位事件
-				local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.UNITEVENT, self.battleUnit.unitId, eventName)
+				local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.UNITEVENT, self.battleUnit.unitId, eventName, self.actionRes)
 			end
 		end
 	end
@@ -119,10 +131,6 @@ function BattleTriggerAction:CheckCondition( _triggerParam, ... )
 	local attackerUnit = _triggerParam.attackerUnit
 	local triggerPlayer = triggerUnit.player
 
-	-- 校验触发参数
-	if not self:CheckTriggerValue(_triggerParam) then
-		return false
-	end
 	-- 校验触发玩家
 	if not self:CheckTriggerPlayer(triggerPlayer) then
 		return false
@@ -133,6 +141,10 @@ function BattleTriggerAction:CheckCondition( _triggerParam, ... )
 	end
 	-- 校验触发目标
 	if not self:CheckTriggerTarget(triggerUnit, attackerUnit) then
+		return false
+	end
+	-- 校验触发参数
+	if not self:CheckTriggerValue(_triggerParam) then
 		return false
 	end
 	return true
@@ -210,11 +222,14 @@ local TriggerValueSwitcher =
 		end
 		local value = tonumber(self.triggerRes.value)
 		if value > 0 then
-			local starIndex = _triggerParam.triggerValue.starIndex
-			return starIndex == value
+			local attackTimes = _triggerParam.triggerValue.attackTimes
+			return attackTimes % (-value) == 0
 		end
-		local attackTimes = _triggerParam.triggerValue.attackTimes
-		return attackTimes % (-value) == 0
+		local sameAttackTimes = _triggerParam.triggerValue.sameAttackTimes
+		if sameAttackTimes > 0 then
+			return sameAttackTimes % (-value) == 0
+		end
+		return false
 	end,
 	-- 额外攻击
 	[BattleTriggerType.EXATTACK] = function( self, _triggerParam, ... )
@@ -223,11 +238,15 @@ local TriggerValueSwitcher =
 		end
 		local value = tonumber(self.triggerRes.value)
 		if value > 0 then
+			if value == 99 then
+				-- 最后一颗星
+				return _triggerParam.triggerValue.isLastStar
+			end
 			local starIndex = _triggerParam.triggerValue.starIndex
 			return starIndex == value
 		end
-		local attackTimes = _triggerParam.triggerValue.attackTimes
-		return attackTimes % (-value) == 0
+		local lastStarAttackTimes = _triggerParam.triggerValue.lastStarAttackTimes
+		return lastStarAttackTimes ~= 0 and lastStarAttackTimes % (-value) == 0
 	end,
 	-- 总星级比较
 	[BattleTriggerType.TOTALSTAR] = function( self, _triggerParam, ... )
@@ -239,7 +258,26 @@ local TriggerValueSwitcher =
 		if leaveType == BattleUnitLeaveType.ALL then
 			return true
 		end
+		if leaveType < 0 then
+			local value = _triggerParam.triggerValue[-leaveType]
+			return not value or value ~= 1
+		end
 		return _triggerParam.triggerValue[leaveType] == 1
+	end,
+	-- 进场
+	[BattleTriggerType.ENTER] = function( self, _triggerParam, ... )
+		local enterType = tonumber(self.triggerRes.value)
+		if enterType == BattleUnitEnterType.ALL or _triggerParam.triggerValue == BattleUnitEnterType.ALL then
+			return true
+		end
+		if enterType < 0 then
+			return _triggerParam.triggerValue ~= -enterType
+		end
+		return _triggerParam.triggerValue == enterType
+	end,
+	-- 触发状态
+	[BattleTriggerType.TRIGGERSTATE] = function( self, _triggerParam, ... )
+		return _triggerParam.triggerValue == self.triggerRes.value
 	end
 }
 
@@ -299,7 +337,7 @@ function BattleTriggerAction:ExecDamage( _triggerParam, _targetUnits, ... )
 		if formulaId ~= 0 then
 			damage = BattleFormula.GetValue(formulaId, self.battleUnit, target, i)
 		end
-		target:OnAttackDamage(self.battleUnit, damage, nil, self.actionRes.effectId)
+		target:OnAttackDamage(self.battleUnit, damage, nil, self.actionRes.effectId, BattleDamageType.TDAMAGE)
 	end
 	return true
 end
@@ -316,6 +354,15 @@ function BattleTriggerAction:ExecExtraDamage( _triggerParam, _targetUnits, ... )
 	local formulaId = tonumber(self.actionRes.value)
 	local damage = BattleFormula.GetValue(formulaId, self.battleUnit, _targetUnits[1])
 	_triggerParam.extraDamage = _triggerParam.extraDamage + damage
+	return true
+end
+
+-- 额外星级
+function BattleTriggerAction:ExecExtraStar( _triggerParam, _targetUnits, ... )
+	if not self:CheckTriggerRate(_triggerParam.randNum) then
+		return false
+	end
+	_triggerParam.extraStar = _triggerParam.extraStar + tonumber(self.actionRes.value)
 	return true
 end
 
@@ -509,7 +556,11 @@ function BattleTriggerAction:ExecAddPoint( _triggerParam, _targetUnits, ... )
 			unit.player:AddPoint(point)
 
 			-- 通知前端添加SP
-			local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.DAMAGE, unit.unitId, point, BattleDamageType.POINT)
+			local unitId = unit.unitId
+			if self.triggerRes.triggerType == BattleTriggerType.LEAVE then
+				unitId = unit.player:GetGrid(unit.posIndex).unitId
+			end
+			local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.DAMAGE, unitId, point, BattleDamageType.POINT)
 
 			isTriggered = true
 		end
@@ -543,7 +594,7 @@ function BattleTriggerAction:ExecTeleport( _triggerParam, _targetUnits, ... )
 	for i = 1, count do
 		local targetMonster = _targetUnits[i]
 		-- 校验触发概率
-		if (distance ~= 0 or not targetMonster:HasUnitFlag(BattleUnitFlag.TELEPORTED)) and self:CheckTriggerRate(_triggerParam.randNum) and not targetMonster:CheckAttributeIgnore(AttriType.TELEPORT) then
+		if (distance ~= 0 or not HasBattleFlag(targetMonster.unitFlag, BattleUnitFlag.TELEPORTED)) and self:CheckTriggerRate(_triggerParam.randNum) and not targetMonster:CheckAttributeIgnore(AttriType.TELEPORT, nil, true) then
 			isTriggered = true
 			-- 设置位置
 			local position = distance == 0 and 0 or (targetMonster.position + distance)
@@ -573,4 +624,41 @@ function BattleTriggerAction:ExecStealSP( _triggerParam, _targetUnits, ... )
 	return isTriggered
 end
 
-classend()
+-- 技能
+function BattleTriggerAction:ExecSkill( _triggerParam, _targetUnits, ... )
+	local result = Split(self.actionRes.value, '|')
+	local skillType = tonumber(result[1])
+	local delayTime = tonumber(result[2] or 0)
+	local param = result[3]
+	local count = #_targetUnits
+	local isTriggered = false
+	for i = 1, count do
+		-- 校验触发概率
+		if self:CheckTriggerRate(_triggerParam.randNum) then
+			local startPosIndex = _triggerParam.triggerValue[BattleUnitLeaveType.POSINDEX] or self.battleUnit.posIndex or 0
+			self.battleUnit.player:ExecSkill(self.battleUnit, _targetUnits[i], skillType, delayTime, param, startPosIndex, self.actionRes.effectId)
+			isTriggered = true
+		end
+	end
+	return isTriggered
+end
+
+-- 移除行为
+function BattleTriggerAction:ExecRemoveAction( _triggerParam, _targetUnits, ... )
+	local actions = Split(self.actionRes.value, '|')
+	local count = #_targetUnits
+	local actionCount = #actions
+	local isTriggered = false
+	for i = 1, count do
+		-- 校验触发概率
+		if self:CheckTriggerRate(_triggerParam.randNum) then
+			local targetUnit = _targetUnits[i]
+			for n = 1, actionCount do
+				local actionId = BattleFormula.GetValue(tonumber(actions[n]), targetUnit)
+				gBattleTrigger:UnRegisterAction(actionId, targetUnit)
+			end
+			isTriggered = true
+		end
+	end
+	return isTriggered
+end

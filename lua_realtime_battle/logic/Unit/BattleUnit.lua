@@ -2,7 +2,7 @@
 --- class BattleUnit
 -- @classmod BattleUnit
 -- 战斗单位，塔、怪物、碰撞等
-class('BattleUnit')
+BattleUnit = xclass('BattleUnit')
 
 local table_insert = table.insert
 local table_remove = table.remove
@@ -10,6 +10,7 @@ local os_clock = os.clock
 local math_floor = math.floor
 local string_format = string.format
 local BattleTriggerParam_New = BattleTriggerParam.New
+local BattleTriggerParam_Destroy = BattleTriggerParam.Destroy
 local FLAGMAP = Utils.BuildFlagMap
 
 local TSUnit = gModel.TSUnit
@@ -17,22 +18,25 @@ local TSUnit = gModel.TSUnit
 ---Constructor
 function BattleUnit:ctor( ... )
 	self.unitType = false							-- 单位类型
-	self.unitId = false 							-- 单位Id，类型+玩家Id+实例Id
+	self.unitId = 0 								-- 单位Id，类型+玩家Id+实例Id
 	self.unit = false
 
 	self.carryAttribute = AttributeList()			-- 属性列表
 	self.attriList = {}								-- 属性值列表
 	self.baseAttriList = {}							-- 属性基础值列表
 
-	self.unitFlag = BattleFlag()					-- 单位标记
+	self.unitFlag = {}								-- 单位标记
 	self.carryBufferList = {}						-- 单位携带状态列表
+
+	self.paramMap = {}								-- 参数Map
+	self.isParamDirty = false						-- 参数Map脏标记
 
 	self.player = false 							-- 玩家
 end
 
 function BattleUnit:Serialize( ... )
 	local tUnit = TSUnit:new{}
-	tUnit.Flag = self.unitFlag:Serialize()
+	tUnit.Flag = SerializeBattleFlag(self.unitFlag)
 	if #self.carryBufferList > 0 then
 		tUnit.BufferList = {}
 		for i = 1, #self.carryBufferList do
@@ -47,7 +51,7 @@ function BattleUnit:DeSerialize( _tUnit, ... )
 	if not _tUnit then
 		return
 	end
-	self.unitFlag:DeSerialize(_tUnit.Flag)
+	DeSerializeBattleFlag(self.unitFlag, _tUnit.Flag)
 	self.carryAttribute:DeSerialize(_tUnit.AttributeList)
 	if _tUnit.BufferList then
 		for i = 1, #_tUnit.BufferList do
@@ -60,9 +64,7 @@ end
 
 function BattleUnit:Destroy( _leaveFlags, ... )
 	-- 触发离场
-	local leaveFlags = _leaveFlags or FLAGMAP(BattleUnitLeaveType.ALL)
-	local triggerParam = BattleTriggerParam_New(self, nil, nil, _leaveFlags)
-	gBattleTrigger:FireTrigger(BattleTriggerType.LEAVE, triggerParam)
+	self:Leave(_leaveFlags)
 	-- 注销所有触发器
 	gBattleTrigger:UnRegisterUnitAllActions(self)
 	-- 移除所有携带状态
@@ -71,31 +73,66 @@ function BattleUnit:Destroy( _leaveFlags, ... )
 	self:AddUnitFlag(BattleUnitFlag.DEATH)
 end
 
-function BattleUnit:Init( ... )
+function BattleUnit:Init( _enter )
 	-- 添加到全局单位Map
 	gBattleRecord:AddBattleUnit(self.unitId, self.unit)
 
+	-- 进入
+	if _enter then
+		self.unit:Enter()
+	end
+end
+
+function BattleUnit:Enter( _enterType, ... )
 	-- 触发进场
-	local triggerParam = BattleTriggerParam_New(self.unit, nil, nil, nil)
+	local enterType = _enterType or BattleUnitEnterType.CREATE
+	local triggerParam = BattleTriggerParam_New(self.unit, nil, nil, enterType)
 	gBattleTrigger:FireTrigger(BattleTriggerType.ENTER, triggerParam)
+	BattleTriggerParam_Destroy(triggerParam)
+end
+
+function BattleUnit:Leave( _leaveFlags, ... )
+	-- 触发离场
+	local leaveFlags = _leaveFlags or FLAGMAP(BattleUnitLeaveType.ALL)
+	local triggerParam = BattleTriggerParam_New(self, nil, nil, _leaveFlags)
+	gBattleTrigger:FireTrigger(BattleTriggerType.LEAVE, triggerParam)
+	BattleTriggerParam_Destroy(triggerParam)
 end
 
 function BattleUnit:Update( _deltaTime, ... )
 	-- 更新状态
-	local bufferCount = #self.carryBufferList
+	local carryBufferList = self.carryBufferList
+	local bufferCount = #carryBufferList
 	for i = bufferCount, 1, -1 do
-		local buffer = self.carryBufferList[i]
+		local buffer = carryBufferList[i]
 		if buffer then
 			buffer:Update(_deltaTime)
 		end
 	end
 end
 
+function BattleUnit:InitParam( _paramList )
+	for i = 1, #_paramList do
+		local paramType = _paramList[i]
+		local default = BattleConstants.BATTLE_PARAM_DEFAULT[paramType]
+		if default and default.unitType == self.unitType then
+			if not self.paramMap[paramType] then
+				self.paramMap[paramType] = { value = default.value, nextValue = default.value, default = default }
+			end
+		end
+	end
+end
+
+function BattleUnit:GetParamValue( _paramType, ... )
+	local param = self.paramMap[_paramType]
+	return param and param.value or 0
+end
+
 function BattleUnit:GenerateUnitId( _instanceId, ... )
 	if not self.unitType or not self.player then
-		return false
+		return 0
 	end
-	return string_format('%d_%d_%d', self.unitType, self.player.playerId, _instanceId)
+	return self.player.playerIndex * 100000000 + self.unitType * 1000000 + _instanceId
 end
 
 T_ATTRI = 0
@@ -108,22 +145,16 @@ function BattleUnit:GetAttribute( _attriType )
 
 		local percentType = _attriType + AttriType.BASEMAX
 		local percent = self:GetAttributePercent(percentType)
-		local percentLimit = BattleConstants.BATTLE_ATTRIBUTE_LIMIT[percentType]
-		local percentMin = percentLimit and percentLimit.min or false
-		local percentMax = percentLimit and percentLimit.max or false
-		if percentMin and percent < percentMin then
-			percent = percentMin
-		end
-		if percentMax and percent > percentMax then
-			percent = percentMax
-		end
 		
 		local baseAttri = self.baseAttriList[_attriType] or 0
 		local attriValue = 0
 		if _attriType == AttriType.ATKSPEED or _attriType == AttriType.EXATKSPEED then
-			attriValue = math_floor((baseAttri + self:GetAttributeValue(_attriType)) / percent)
+			attriValue = (baseAttri + self:GetAttributeValue(_attriType)) / percent
+		elseif _attriType == AttriType.SPEED then
+			local extraSpeed = self:GetAttributePercent(AttriType.EXTRASPEED)
+			attriValue = (baseAttri + self:GetAttributeValue(_attriType)) * percent * extraSpeed
 		else
-			attriValue = math_floor((baseAttri + self:GetAttributeValue(_attriType)) * percent)
+			attriValue = (baseAttri + self:GetAttributeValue(_attriType)) * percent
 		end
 		local valueLimit = BattleConstants.BATTLE_ATTRIBUTE_LIMIT[_attriType]
 		local valueMin = valueLimit and valueLimit.min or false
@@ -133,6 +164,11 @@ function BattleUnit:GetAttribute( _attriType )
 		end
 		if valueMax and attriValue > valueMax then
 			attriValue = valueMax
+		end
+		if _attriType == AttriType.SPEED then
+			attriValue = math_floor(attriValue / Constants.BATTLE_FPS)
+		else
+			attriValue = math_floor(attriValue)
 		end
 		if not attriCache then
 			attriCache = {}
@@ -154,7 +190,19 @@ function BattleUnit:GetAttributePercent( _attriType )
 	if _attriType <= AttriType.BASEMAX then
 		return 0
 	end
-	return self.carryAttribute:GetAttribute(_attriType, nil, true)
+	local percent = self.carryAttribute:GetAttribute(_attriType, nil, true)
+	local percentLimit = BattleConstants.BATTLE_ATTRIBUTE_LIMIT[_attriType]
+	if percentLimit then
+		local percentMin = percentLimit.min
+		local percentMax = percentLimit.max
+		if percentMin and percent < percentMin then
+			percent = percentMin
+		end
+		if percentMax and percent > percentMax then
+			percent = percentMax
+		end
+	end
+	return percent
 end
 
 function BattleUnit:UpdateBaseAttribute( _attriType, _value, ... )
@@ -174,7 +222,12 @@ end
 function BattleUnit:UpdateCarryAttribute( _attriType, _branch, _value, _add, ... )
 	local value, oldValue = self.carryAttribute:UpdateAttribute( _attriType, _branch, _value, _add, ...)
 	if value ~= oldValue then
-		local dirtyAttriType = (_attriType < AttriType.BASEMAX or _attriType > AttriType.BASEPERCENTMAX) and _attriType or _attriType - AttriType.BASEMAX
+		local dirtyAttriType = _attriType
+		if _attriType == AttriType.EXTRASPEED then
+			dirtyAttriType = AttriType.SPEED
+		elseif _attriType >= AttriType.BASEMAX and _attriType <= AttriType.BASEPERCENTMAX then
+			dirtyAttriType = _attriType - AttriType.BASEMAX
+		end
 		local attriCache = self.attriList[dirtyAttriType]
 		if attriCache then
 			attriCache.dirty = true
@@ -184,22 +237,15 @@ function BattleUnit:UpdateCarryAttribute( _attriType, _branch, _value, _add, ...
 end
 
 function BattleUnit:AddBuffer( _bufferResId, _owner, _useBetterLayer, ... )
-	if self:HasUnitFlag(BattleUnitFlag.DEATH) then
+	if HasBattleFlag(self.unitFlag, BattleUnitFlag.DEATH) then
 		return false
 	end
 	local bufferRes = GameResMgr.GetBattleBufferRes(_bufferResId)
 	if not bufferRes then
 		return false
 	end
-	-- 控制类Buff概率免疫
-	if bufferRes.bufferType == BufferType.CONTROL then
-		local ignoreControlRate = self:GetAttribute(AttriType.IGNORECONTROL)
-		if ignoreControlRate > 0 and gBattleRandNum:NextInt(s_PercentMax) <= ignoreControlRate then
-			return false
-		end
-	end
 	-- 可免疫属性校验
-	if self:CheckAttributeIgnore(nil, bufferRes) then
+	if self:CheckAttributeIgnore(nil, bufferRes, bufferRes.bufferType == BufferType.CONTROL) then
 		return false
 	end
 	local bufferOverlapType = bufferRes.overlapType
@@ -212,7 +258,7 @@ function BattleUnit:AddBuffer( _bufferResId, _owner, _useBetterLayer, ... )
 				-- 添加层数
 				buffer:AddBufferLayer(_owner, _useBetterLayer)
 				-- Buffer添加
-				self:OnBufferAdd(buffer)
+				self:OnBufferAdd(buffer, _owner)
 				return buffer
 			end
 		end
@@ -227,14 +273,21 @@ function BattleUnit:AddBuffer( _bufferResId, _owner, _useBetterLayer, ... )
 	-- 插入列表
 	table_insert(self.carryBufferList, buffer)
 	-- Buffer添加
-	self:OnBufferAdd(buffer)
+	self:OnBufferAdd(buffer, _owner)
 	return buffer
 end
 
 -- 校验部分状态免疫
-function BattleHero:CheckAttributeIgnore( _attriType, _bufferRes, ... )
+function BattleUnit:CheckAttributeIgnore( _attriType, _bufferRes, _isControl, ... )
 	if not _bufferRes and not _attriType then
 		return false
+	end
+	if _isControl then
+		-- 控制类Buff概率免疫
+		local ignoreControlRate = self:GetAttribute(AttriType.IGNORECONTROL)
+		if ignoreControlRate > 0 and gBattleRandNum:NextInt(s_PercentMax) <= ignoreControlRate then
+			return true
+		end
 	end
 	local attriType = _attriType or _bufferRes.valueTypeList[1]
 	if not attriType then
@@ -243,9 +296,25 @@ function BattleHero:CheckAttributeIgnore( _attriType, _bufferRes, ... )
 	if attriType < AttriType.STATE_MIN or attriType > AttriType.STATE_IGNORE then
 		return false
 	end
+	-- 已经被标记的时候，不再添加状态
+	local attriFlag = BattleUnitFlag.STATE_MIN + attriType - AttriType.STATE_MIN
+	if HasBattleFlag(self.unitFlag, attriFlag) then
+		return true
+	end
 	local ignoreRate = self:GetAttribute(attriType + AttriType.IGNORE_MIN - AttriType.STATE_MIN)
 	if ignoreRate > 0 and gBattleRandNum:NextInt(s_PercentMax) <= ignoreRate then
 		return true
+	end
+	return false
+end
+
+function BattleUnit:GetBufferByResId( _bufferResId, ... )
+	local bufferCount = #self.carryBufferList
+	for i = 1, bufferCount do
+		local buffer = self.carryBufferList[i]
+		if buffer.bufferRes.id == _bufferResId then
+			return buffer
+		end
 	end
 	return false
 end
@@ -319,18 +388,18 @@ function BattleUnit:RemoveBufferLayer( _bufferResId, _owner, _layerCount, ... )
 	for i = #self.carryBufferList, 1, -1 do
 		local buffer = self.carryBufferList[i]
 		if buffer.bufferRes.id == _bufferResId and _owner.player.unitId == buffer.owner.player.unitId then
+			-- Buffer层数移除
+			self:OnBufferLayerRemove(buffer, _owner, layerCount)
 			for i = 1, layerCount do
 				-- 层数减1
-				buffer:RemoveBufferLayer(0, _owner.unitId)
+				buffer:RemoveBufferLayer(_owner and 0 or 1, _owner, nil, true)
 			end
-			-- Buffer层数移除
-			self:OnBufferLayerRemove(buffer, layerCount)
 			break
 		end
 	end
 end
 
-function BattleUnit:RemoveBufferLayerByBufferId( _bufferId, _layerCount, ... )
+function BattleUnit:RemoveBufferLayerByBufferId( _bufferId, _owner, _layerCount, ... )
 	if not _bufferId or _bufferId == 0 then
 		return
 	end
@@ -342,12 +411,12 @@ function BattleUnit:RemoveBufferLayerByBufferId( _bufferId, _layerCount, ... )
 	for i = #self.carryBufferList, 1, -1 do
 		local buffer = self.carryBufferList[i]
 		if buffer.bufferId == _bufferId then
+			-- Buffer层数移除
+			self:OnBufferLayerRemove(buffer, _owner, layerCount)
 			for i = 1, layerCount do
 				-- 层数减1
-				buffer:RemoveBufferLayer(0)
+				buffer:RemoveBufferLayer(_owner and 0 or 1, _owner, nil, true)
 			end
-			-- Buffer层数移除
-			self:OnBufferLayerRemove(buffer, layerCount)
 			break
 		end
 	end
@@ -380,44 +449,49 @@ function BattleUnit:RemoveAllBuffer( ... )
 end
 
 
-function BattleUnit:OnBufferAdd( _buffer, ... )
+function BattleUnit:OnBufferAdd( _buffer, _owner,... )
 end
 
 function BattleUnit:OnBufferRemove( _buffer, ... )
 end
 
-function BattleUnit:OnBufferLayerRemove( _buffer, _layerCount, ... )
+function BattleUnit:OnBufferLayerRemove( _buffer, _owner, _layerCount, ... )
 end
 
 function BattleUnit:OnAllBufferRemove( ... )
 end
 
 T_FLAG = 0
-function BattleUnit:AddUnitFlag( _unitFlag, _flagValue, ... )
-	if _unitFlag == BattleUnitFlag.DIZZY then
+function BattleUnit:AddUnitFlag( _flagType, _flagValue, ... )
+	if _flagType == BattleUnitFlag.DIZZY then
 		-- 已经被晕过了，不能再晕了
-		if self:HasUnitFlag(BattleUnitFlag.DIZZYED) then
+		if HasBattleFlag(self.unitFlag, BattleUnitFlag.DIZZYED) then
 			return
 		end
 		-- 眩晕标记
 		self:AddBuffer(Constants.BATTLE_DIZZYED_BUFFER, self)
 	end
-
-	-- local time = os_clock()
-	self.unitFlag:AddFlag(_unitFlag, _flagValue)
-	-- T_FLAG = T_FLAG + os_clock() - time
+	if AddBattleFlag(self.unitFlag, _flagType, _flagValue) then
+		local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.FLAG, self.unitId, _flagType, true)
+	end
 end
 
-function BattleUnit:ClearUnitFlag( _unitFlag, ... )
-	self.unitFlag:ClearFlag(_unitFlag)
+function BattleUnit:ClearUnitFlag( _flagType, _flagValue, ... )
+	if ClearBattleFlag(self.unitFlag, _flagType, _flagValue) then
+		local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.FLAG, self.unitId, _flagType, false)
+	end
 end
 
-function BattleUnit:HasUnitFlag( _unitFlag, ... )
-	return self.unitFlag:HasFlag(_unitFlag)
+function BattleUnit:HasUnitFlag( _flagType, ... )
+	return HasBattleFlag(self.unitFlag, _flagType)
 end
 
-function BattleUnit:GetUnitFlagValue( _unitFlag, ... )
-	return self.unitFlag:GetFlagValue(_unitFlag)
+function BattleUnit:NotifyAllUnitFlag( ... )
+	for flagType, flagValue in pairs(self.unitFlag) do
+		if flagValue ~= 0 then
+			local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.FLAG, self.unitId, flagType, true)
+		end
+	end
 end
 
 function BattleUnit:RegisterTalentList( _talentList, _owner, ... )
@@ -456,12 +530,19 @@ function BattleUnit:UnRegisterTalent( _talentId, ... )
 end
 
 function BattleUnit:CalcDamage( _damage, _targetMonster, _ignoreSeckill, _seckillRate, _ignoreCritical, ... )
+	-- 被黑客
+	if HasBattleFlag(self.unitFlag, BattleUnitFlag.HACKED) then
+		local hackerFactor = self:GetAttribute(AttriType.HACKED)
+		_damage = math_floor(-_damage * hackerFactor / Constants.PERCENT_MAX)
+		return _damage, false
+	end
+
 	local ignoreSeckill = _ignoreSeckill or false
 	local damage = _damage
 	local defenceScale = 1
 	if _targetMonster then
 		-- 秒杀判定
-		if not ignoreSeckill and not _targetMonster:HasUnitFlag(BattleUnitFlag.SECKILLED) then
+		if not ignoreSeckill and not HasBattleFlag(_targetMonster.unitFlag, BattleUnitFlag.SECKILLED) then
 			local seckillRate = _seckillRate or self:GetAttribute(AttriType.SECKILL)
 			if seckillRate > 0 and gBattleRandNum:NextInt(s_PercentMax) <= seckillRate then
 				damage = _targetMonster:GetMaxHP() * Constants.BATTLE_SECKILL_PERCENTS[_targetMonster.monsterRes.type] * s_PercentScale
@@ -500,4 +581,14 @@ function BattleUnit:IsValid( ... )
 	return true
 end
 
-classend()
+function BattleUnit:CanAttack( ... )
+	return true
+end
+
+function BattleUnit:IsHaloValid( ... )
+	return true
+end
+
+function BattleUnit:GetPositionDistance( _position, ... )
+	return 15
+end

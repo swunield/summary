@@ -1,7 +1,7 @@
 ---
 --- class BattleTrigger
 -- @classmod BattleTrigger
-class('BattleTrigger')
+BattleTrigger = xclass('BattleTrigger')
 
 local os_clock = os.clock
 
@@ -139,5 +139,3 @@ function BattleTrigger:GenerateTriggerId( ... )
 	self.triggerIdGenerator = self.triggerIdGenerator + 1
 	return self.triggerIdGenerator
 end
-
-classend()

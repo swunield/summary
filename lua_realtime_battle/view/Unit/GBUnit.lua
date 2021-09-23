@@ -1,21 +1,22 @@
 ---
 --- class GBUnit
 -- @classmod GBUnit
-class('GBUnit', GBFrameChasingObject)
+GBUnit = xclass('GBUnit', GBFrameChasingObject)
+
+local os_clock = os.time
+
+local FireBattleUnitEvent = LUBattleUnit.FireUnitEvent
 
 ---Constructor
 function GBUnit:ctor( ... )
-	self.super = Super()
-
-	self.gameObject = false 				-- 单位物件
-	self.transform = false 					-- 单位Transform
-	self.uBattleUnit = false				-- 单位组件
 	self.gbPlayer = false 					-- 玩家
 	self.gbUnit = false 					-- GBUnit
 	self.battleUnit = false					-- BattleUnit，逻辑单位
 
 	self.bufferMap = {}						-- 状态特效
 	self.damageMap = false
+	self.unitId = 0
+	self.unitFlagMap = {}					-- 单位标记
 end
 
 function GBUnit:Init( ... )
@@ -30,8 +31,15 @@ function GBUnit:Destroy( ... )
 		end
 	end
 
+	-- 清除标记
+	for unitFlag, value in pairs(self.unitFlagMap) do
+		if value == 1 then
+			self.gbUnit:OnUnitFlagChange(unitFlag, false)
+		end
+	end
+
 	-- 销毁当前类声明的变量，尤其是与UnityObject之间的引用
-	self:ClearContent()
+	self.super:Destroy()
 end
 
 function GBUnit:OnBufferChange( _isAdd, _bufferRes, ... )
@@ -59,7 +67,7 @@ function GBUnit:OnBufferChange( _isAdd, _bufferRes, ... )
 				end
 			end
 			local addBufferEvent = eventNameList[1]
-			if addBufferEvent and addBufferEvent ~= '' then
+			if addBufferEvent and addBufferEvent ~= 0 then
 				self:FireUnitEvent(addBufferEvent)
 			end
 		end
@@ -77,16 +85,63 @@ function GBUnit:OnBufferChange( _isAdd, _bufferRes, ... )
 			bufferInfo.effectId = 0
 		end
 		local removeBufferEvent = eventNameList[2]
-		if removeBufferEvent and removeBufferEvent ~= '' then
+		if removeBufferEvent and removeBufferEvent ~= 0 then
 			self:FireUnitEvent(removeBufferEvent)
 		end
 	end
 end
 
-function GBUnit:FireUnitEvent( _eventName, ... )
-	if self.uBattleUnit then
-		self.uBattleUnit:FireUnitEvent(_eventName)
+-- 状态变化
+local UnitFlagChangeSwitcher = 
+{
+}
+
+function GBUnit:OnUnitFlagChange( _unitFlag, _isAdd )
+	local switcher = UnitFlagChangeSwitcher[_unitFlag]
+	if switcher and switcher(self, _isAdd) then
+		if _isAdd then
+			self.unitFlagMap[_unitFlag] = 1
+		else
+			self.unitFlagMap[_unitFlag] = nil
+		end
 	end
+end
+
+function GBUnit:CheckAllUnitFlag( ... )
+	for unitFlag, value in pairs(self.unitFlagMap) do
+		if value <= 0 then
+			self.gbUnit:OnUnitFlagChange(unitFlag, value == -1)
+		end
+	end
+end
+
+local UnitEventSwitcher = {
+	[GameStringType.SZPoint] = function( self, _eventName, _eventParam, _isReconnect )
+		if not _eventParam then
+			return
+		end
+		local bufferResId = tonumber(_eventParam.value)
+		local buffer = self.battleUnit:GetBufferByResId(bufferResId)
+		local point = buffer and #buffer.layerList or 0
+		local eventName = _eventName + 1 + point
+		if not _isReconnect and point == 0 then
+			eventName = _eventName
+		end
+		FireBattleUnitEvent(self.unitId, eventName)
+	end
+}
+
+function GBUnit:FireUnitEvent( _eventName, _eventParam, _isReconnect, ... )
+	if self.unitId ~= 0 then
+		local switcher = UnitEventSwitcher[_eventName]
+		if switcher then
+			switcher(self, _eventName, _eventParam, _isReconnect)
+		else
+			FireBattleUnitEvent(self.unitId, _eventName)
+		end
+		return true
+	end
+	return false
 end
 
 function GBUnit:ShowDamage( _gbUnit, _damage, _damageType, ... )
@@ -106,5 +161,3 @@ function GBUnit:HasSameDamage( _damage, _damageType, ... )
 	self.damageMap[key] = 1
 	return false
 end
-
-classend()

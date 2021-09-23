@@ -1,11 +1,17 @@
 ---
 --- class BattlePlayerAI
 -- @classmod BattlePlayerAI
-class('BattlePlayerAI')
+BattlePlayerAI = xclass('BattlePlayerAI')
 
 local table_insert = table.insert
+local math_floor = math.floor
+local math_random = math.random
 
 local TSPlayerAI = gModel.TSPlayerAI
+
+local BattleHalfFPS = math.floor(Constants.BATTLE_FPS / 2)
+local BattleDoubleFPS = Constants.BATTLE_FPS * 2
+local MaxEndTime = 100000000 
 
 ---Constructor
 function BattlePlayerAI:ctor( _tPlayerAI, ... )
@@ -20,16 +26,28 @@ function BattlePlayerAI:ctor( _tPlayerAI, ... )
 	self.rollFactor = 1
 	self.upgradeFactor = 1
 	self.mergeFactor = 1
+	self.beginTime = 0
+	self.endTime = 0
+	self.minInterval = 0
+	self.maxInterval = 0
 
 	self.firstRollTimes = 0					-- 初始roll次数
-	self.nextFrameCount = 0					-- 下一次AI判定帧数
+	self.nextAITime = 0						-- 下一次AI判定时间
 	self.mergeDirtyFlag = 0					-- 0不需刷新 1只刷新价值 2价值列表全部刷新
+
+	self.emojiManualRate = 0				-- 主动表情概率
+	self.emojiTriggerRate = 0				-- 被动表情概率
+	self.nextManualEmojiTime = 0			-- 下一次表情时间
+	self.nextManualEmojiIndex = 0			-- 下一次表情索引
+	self.lastManualEmojiTime = 0			-- 上一次主动表情时间
+	self.nextTriggerEmojiTime = 0			-- 下一次被动表情时间
+	self.nextTriggerEmojiIndex = 0			-- 下一次被动表情索引
 end
 
 function BattlePlayerAI:Serialize( ... )
 	local tPlayerAI = TSPlayerAI:new{}
 	tPlayerAI.FirstRollTimes = self.firstRollTimes ~= 0 and self.firstRollTimes or nil
-	tPlayerAI.NextFrameCount = self.nextFrameCount
+	tPlayerAI.NextAITime = self.nextAITime
 	tPlayerAI.MergeDirtyFlag = self.mergeDirtyFlag ~= 0 and self.mergeDirtyFlag or nil
 	return tPlayerAI
 end
@@ -39,20 +57,27 @@ function BattlePlayerAI:DeSerialize( _tPlayerAI, ... )
 		return
 	end
 	self.firstRollTimes = _tPlayerAI.FirstRollTimes or 0
-	self.nextFrameCount = _tPlayerAI.NextFrameCount
+	self.nextAITime = _tPlayerAI.NextAITime
 	self.mergeDirtyFlag = _tPlayerAI.MergeDirtyFlag or 0
 end
 
 function BattlePlayerAI:Init( _player, ... )
 	self.player = _player or false
+	local tPlayerAI = self.tPlayerAI
 	-- 操作价值系数
-	self.rollFactor = self.tPlayerAI.RollFactor / Constants.PERCENT_MAX
-	self.upgradeFactor = self.tPlayerAI.UpgradeFactor / Constants.PERCENT_MAX
-	self.mergeFactor = self.tPlayerAI.MergeFactor / Constants.PERCENT_MAX
+	self.rollFactor = tPlayerAI.RollFactor / Constants.PERCENT_MAX
+	self.upgradeFactor = tPlayerAI.UpgradeFactor / Constants.PERCENT_MAX
+	self.mergeFactor = tPlayerAI.MergeFactor / Constants.PERCENT_MAX
+	self.beginTime = tPlayerAI.BeginTime
+	self.endTime = tPlayerAI.EndTime == 0 and MaxEndTime or tPlayerAI.EndTime
+	self.minInterval = tPlayerAI.Interval[1] or 500
+	self.maxInterval = tPlayerAI.Interval[2] or 1000
+	self.emojiManualRate = tPlayerAI.EmojiManualRate or 0
+	self.emojiTriggerRate = tPlayerAI.EmojiTriggerRate or 0
 	-- 初始化塔单星阶级价值表
 	local towerPool = _player.towerPool
 	for i = 1, #towerPool do
-		local towerFactor = self.tPlayerAI.TowerFactors[i] / Constants.PERCENT_MAX
+		local towerFactor = tPlayerAI.TowerFactors[i] / Constants.PERCENT_MAX
 		local tower = { valueList = {}, poolIndex = i, curValue = 0, nextValue = 0, totalStar = 0, upgradeValueUp = 0, upgradeCost = 0, upgradeOperation = false }
 		local towerResId = towerPool[i]
 		self.towerMap[towerResId] = tower
@@ -70,13 +95,25 @@ function BattlePlayerAI:Init( _player, ... )
 	-- 初始化Roll操作
 	self.rollOperation = { value = 0, priority = 0, frame = { FrameType = BattleFrameType.ROLL }, isPointEnough = true }
 	self.firstRollTimes = 4
-	self.nextFrameCount = gBattleRandNum:NextInt(Constants.BATTLE_FPS / 2, Constants.BATTLE_FPS)
 	-- 初始化最优帧
 	self.bestFrame = BattleFrame()
 end
 
-function BattlePlayerAI:Update( ... )
-	if self.nextFrameCount ~= gBattleFrameCount then
+function BattlePlayerAI:Update( _battleTime )
+	if _battleTime < self.beginTime or _battleTime > self.endTime then
+		return
+	end
+
+	-- 表情
+	self:UpdateEmoji(_battleTime)
+
+	if self.nextAITime > _battleTime then
+		return
+	end
+
+	-- 前4次操作间隔固定
+	if self.nextAITime == 0 then
+		self.nextAITime = _battleTime + gBattleRandNum:NextInt(300, 700)
 		return
 	end
 
@@ -84,11 +121,16 @@ function BattlePlayerAI:Update( ... )
 	if self.firstRollTimes ~= 0 then
 		self.bestOperation = self.rollOperation
 		self.firstRollTimes = self.firstRollTimes - 1
+		if self.firstRollTimes == 0 then
+			self.nextAITime = _battleTime + gBattleRandNum:NextInt(self.minInterval, self.maxInterval)
+		else
+			self.nextAITime = _battleTime + gBattleRandNum:NextInt(300, 700)
+		end
 	else
 		self:BuildAllOperations()
+		self.nextAITime = _battleTime + gBattleRandNum:NextInt(self.minInterval, self.maxInterval)
 	end
 
-	self.nextFrameCount = gBattleFrameCount + (self.firstRollTimes ~= 0 and 20 or gBattleRandNum:NextInt(Constants.BATTLE_FPS / 2, Constants.BATTLE_FPS * 2))
 	self:TryExecBestOperation()
 end
 
@@ -120,16 +162,17 @@ function BattlePlayerAI:BuildAllOperations( ... )
 	if hasEmptyPos then
 		local rollOperation = self.rollOperation
 		rollOperation.isPointEnough = curPoint >= rollCost 
-		rollOperation.value = self.rollValue * (curPoint >= rollCost and rollCost or curPoint) / rollCost
+		rollOperation.value = self.rollValue * self.rollFactor * (curPoint >= rollCost and rollCost or curPoint) / rollCost
 		bestOtherOperation = rollOperation
 	end	
 	-- 升阶
+	local upgradeFactor = self.upgradeFactor
 	for towerResId, tower in pairs(self.towerMap) do
 		local upgradeOperation = tower.upgradeOperation
 		if upgradeOperation then
 			local upgradeCost = tower.upgradeCost
 			upgradeOperation.isPointEnough = curPoint >= upgradeCost
-			upgradeOperation.value = tower.upgradeValueUp * (curPoint >= upgradeCost and upgradeCost or curPoint) / upgradeCost
+			upgradeOperation.value = tower.upgradeValueUp * upgradeFactor * (curPoint >= upgradeCost and upgradeCost or curPoint) / upgradeCost
 			if not bestOtherOperation then
 				bestOtherOperation = upgradeOperation
 			elseif upgradeOperation.value > bestOtherOperation.value then
@@ -197,7 +240,7 @@ function BattlePlayerAI:OnTowerUpgrade( _towerResId, _grade, ... )
 	tower.curValue = tower.valueList[_grade]
 	tower.nextValue = tower.valueList[_grade + 1]
 	tower.upgradeCost = Constants.BATTLE_GRADE_COST[_grade]
-	tower.upgradeValueUp = (tower.nextValue - tower.curValue) * self.upgradeFactor * tower.totalStar
+	tower.upgradeValueUp = (tower.nextValue - tower.curValue) * tower.totalStar
 	if self.mergeDirtyFlag == 0 then
 		self.mergeDirtyFlag = 1
 	end
@@ -211,9 +254,8 @@ function BattlePlayerAI:OnTowerEnter( _battleTower, ... )
 	tower.totalStar = tower.totalStar + _battleTower.star
 	tower.upgradeValueUp = (tower.nextValue - tower.curValue) * tower.totalStar
 	self.mergeDirtyFlag = 2
-	if self.firstRollTimes == 0 and self.nextFrameCount - gBattleFrameCount < Constants.BATTLE_FPS then
-		-- warn('Check Frame Count', self.nextFrameCount, gBattleFrameCount, gBattleFrameCount + Constants.BATTLE_FPS - self.nextFrameCount)
-		self.nextFrameCount = gBattleFrameCount + Constants.BATTLE_FPS
+	if self.firstRollTimes == 0 and self.nextAITime - gBattleTime < 1000 then
+		self.nextAITime = gBattleTime + 1000
 	end
 end
 
@@ -225,9 +267,8 @@ function BattlePlayerAI:OnTowerLeave( _battleTower, ... )
 	tower.totalStar = tower.totalStar - _battleTower.star
 	tower.upgradeValueUp = (tower.nextValue - tower.curValue) * tower.totalStar
 	self.mergeDirtyFlag = 2
-	if self.firstRollTimes == 0 and self.nextFrameCount - gBattleFrameCount < Constants.BATTLE_FPS then
-		-- warn('Check Frame Count', self.nextFrameCount, gBattleFrameCount, gBattleFrameCount + Constants.BATTLE_FPS - self.nextFrameCount)
-		self.nextFrameCount = gBattleFrameCount + Constants.BATTLE_FPS
+	if self.firstRollTimes == 0 and self.nextAITime - gBattleTime < 1000 then
+		self.nextAITime = gBattleTime + 1000
 	end
 end
 
@@ -238,7 +279,7 @@ function BattlePlayerAI:RefreshRollValue( ... )
 		totalValue = totalValue + tower.curValue
 		count = count + 1
 	end
-	self.rollValue = totalValue * self.rollFactor / count
+	self.rollValue = totalValue / count
 end
 
 function BattlePlayerAI:RefreshMergeOperation( ... )
@@ -350,4 +391,35 @@ function BattlePlayerAI:GetTowerValue( _battleTower, _extraStar, ... )
 	return starValue * star
 end
 
-classend()
+function BattlePlayerAI:UpdateEmoji( _battleTime )
+	if self.emojiManualRate ~= 0 and self.nextManualEmojiTime <= _battleTime then
+		if self.nextManualEmojiIndex ~= 0 then
+			local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.EMOJI, self.player.playerId, self.nextManualEmojiIndex)
+			self.nextManualEmojiIndex = 0
+			self.lastManualEmojiTime = _battleTime
+		end
+		self.nextManualEmojiTime = _battleTime + math_random(Constants.EMOJI_MANUAL_INTERVAL[1], Constants.EMOJI_MANUAL_INTERVAL[2])
+		self.nextManualEmojiIndex = math_random(Constants.PERCENT_MAX) <= self.emojiManualRate and math_random(Constants.EMOJI_INDEX_MAX) or 0
+	end
+	local nextTime = self.nextTriggerEmojiTime
+	if nextTime ~= 0 and nextTime <= _battleTime then
+		self.nextTriggerEmojiTime = 0
+		local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.EMOJI, self.player.playerId, self.nextTriggerEmojiIndex)
+	
+		-- 主被动表情间隔
+		if self.nextManualEmojiIndex ~= 0 and self.nextManualEmojiTime - _battleTime < Constants.EMOJI_INTERVAL then
+			self.nextManualEmojiTime = _battleTime + Constants.EMOJI_INTERVAL
+		end
+	end
+end
+
+function BattlePlayerAI:OnTriggerEmoji( _index, ... )
+	if self.emojiTriggerRate == 0 or self.nextTriggerEmojiTime ~= 0 or self.lastManualEmojiTime + Constants.EMOJI_INTERVAL > gBattleTime then
+		return
+	end
+	self.nextTriggerEmojiIndex = math_random(Constants.PERCENT_MAX) <= self.emojiManualRate and math_random(Constants.EMOJI_INDEX_MAX) or 0
+	if self.nextTriggerEmojiIndex == 0 then
+		return
+	end
+	self.nextTriggerEmojiTime = gBattleTime + math_random(Constants.EMOJI_TRIGGER_INTERVAL[1], Constants.EMOJI_TRIGGER_INTERVAL[2])
+end

@@ -1,16 +1,16 @@
 ---
 --- class GBEffect
 -- @classmod GBEffect
-class('GBEffect', GBFrameChasingObject)
+GBEffect = xclass('GBEffect', GBFrameChasingObject)
+
+local PlayBattleEffect = LUBattleEffect.Play
+local FireBattleEffect = LUBattleEffect.Fire
+local StopBattleEffect = LUBattleEffect.Stop
+local RestartBattleEffect = LUBattleEffect.Restart
+local FireBattleEffectEvent = LUBattleEffect.FireEvent
 
 ---Constructor
 function GBEffect:ctor( _effectId, ... )
-	self.super = Super()
-
-	self.gameObject = false
-	self.transform = false
-	self.uEffect = false
-
 	self.effectId = _effectId
 	self.effectRes = false					-- 特效配置
 
@@ -24,16 +24,16 @@ function GBEffect:ctor( _effectId, ... )
 end
 
 function GBEffect:Destroy( _stopEffect, ... )
-	if _stopEffect and self.uEffect then
-		self.uEffect:Stop(true)
+	if _stopEffect and self.effectId ~= 0 then
+		StopBattleEffect(self.effectId, true)
 	end
 	-- 销毁当前类声明的变量，尤其是与UnityObject之间的引用
-	self:ClearContent()
+	self.super:Destroy()
 end
 
-function GBEffect:Init( _effectRes, _gbUnit, _gbTargetUnit, _duration, _endCallback, ... )
+function GBEffect:Init( _effectRes, _gbUnit, _gbTargetUnit, _duration, _eventName, _endCallback, ... )
 	self.effectRes = _effectRes
-	if not self.effectRes or self.effectRes.prefabName == '' then
+	if not self.effectRes or self.effectRes.prefabName == 0 then
 		return false
 	end
 
@@ -43,10 +43,11 @@ function GBEffect:Init( _effectRes, _gbUnit, _gbTargetUnit, _duration, _endCallb
 	self.duration = _duration or BattleConstants.BATTLE_MISSILE_TIME
 	
 	self:CheckFrameChasing('Init', function( ... )
-		self.gameObject = GameObjectPool.INSTANCE:Request(self.effectRes.prefabName, 'animation/other/prefabs/tower/', true).gameObject
-		self.transform = self.gameObject.transform
-		self.uEffect = self.gameObject:GetComponent(UBattleEffect)
-		self:InitEffect()
+		if self:InitEffect() then
+			if _eventName then
+				FireBattleEffectEvent(self.effectId, _eventName)
+			end
+		end
 	end)
 
 	return true
@@ -80,52 +81,28 @@ function GBEffect:InitSingle( ... )
 	if not self.gbUnit then
 		return
 	end
-	if not self.uEffect then
-		return false
-	end
-	self.gameObject.name = string.format('Single-%d-%d-[%s]', self.effectRes.id, self.effectId, self.gbUnit.battleUnit.unitId)
-	local uBattleUnit = self.effectRes.targetType == EffectTargetType.TARGET and self.gbUnit.uBattleUnit or self.gbUnit.gbPlayer.uBattleUnit
-	local objLayer = self.effectRes.zOrderType == EffectZOrderType.TOP and uBattleUnit.objTop or uBattleUnit.objBottom
-	UIUtils.SetObjectParent(self.gameObject, objLayer)
-	self.uEffect:Play(self.gbUnit.uBattleUnit, function( _isHit, ... )
-		if self.endCallback then
-			self.endCallback(_isHit, self)
-		end
-		gGBField:RemoveGBEffect(self.effectId)
-	end)
+	local parentUnitId = self.effectRes.targetType == EffectTargetType.TARGET and self.gbUnit.unitId or self.gbUnit.gbPlayer.unitId
+	local isTop = self.effectRes.zOrderType == EffectZOrderType.TOP
+	self.effectId = PlayBattleEffect(self.effectId, self.effectRes.prefabName, GameStringType.EffectPath, parentUnitId, isTop, self.gbUnit.unitId)
 
 	if self.effectRes.targetType == EffectTargetType.TARGET then
-		self.singleKey = self.gbUnit.battleUnit.unitId .. '-' .. self.effectRes.id
+		self.singleKey = self.gbUnit.unitId .. '-' .. self.effectRes.id
 	end
 
 	return true
 end
 
 function GBEffect:InitAOE( ... )
-	if not self.uEffect then
-		return false
-	end
-	self.gameObject.name = string.format('AOE-%d-%d', self.effectRes.id, self.effectId)
-
 	return true
 end
 
 function GBEffect:InitMissile( ... )
-	if not self.uEffect then
-		return false
-	end
-	UIUtils.SetObjectParent(self.gameObject, self.gbUnit.gbPlayer.objTop)
 	if self.effectRes.targetType == EffectTargetType.TARGET then
 		if not self.gbTargetUnit then
 			return false
 		end
-		self.gameObject.name = string.format('Missile-%d-%d-[%s]-[%s]', self.effectRes.id, self.effectId, self.gbUnit.battleUnit.unitId, self.gbTargetUnit.battleUnit.unitId)
-		self.uEffect:Fire(self.gbUnit.uBattleUnit, self.gbTargetUnit.uBattleUnit, gGBField.looper, self.duration - Constants.BATTLE_FRAME_TIME, nil, function( _isHit, ... )
-			if self.endCallback then
-				self.endCallback(_isHit, self)
-			end
-			gGBField:RemoveGBEffect(self.effectId)
-		end)
+		self.effectId = FireBattleEffect(self.effectId, self.effectRes.prefabName, GameStringType.EffectPath, self.gbUnit.gbPlayer.unitId, true, 
+			self.gbUnit.unitId, self.gbTargetUnit.unitId, self.duration - Constants.BATTLE_FRAME_TIME, 0)
 	else
 
 	end
@@ -133,10 +110,15 @@ function GBEffect:InitMissile( ... )
 end
 
 function GBEffect:Restart( ... )
-	if not self.uEffect then
+	if not self.effectId == 0 then
 		return
 	end
-	self.uEffect:Restart()
+	RestartBattleEffect(self.effectId)
 end
 
-classend()
+function GBEffect:OnEffectEnd( _isHit, ... )
+	if self.endCallback then
+		self.endCallback(_isHit, self)
+	end
+	gGBField:RemoveGBEffect(self.effectId)
+end

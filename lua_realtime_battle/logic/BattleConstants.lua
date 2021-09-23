@@ -10,21 +10,15 @@ Global.BattleConstants = {
 	-- 怪物路径单位长度
 	BATTLE_PK_ROAD_UNIT_LENGTH = 2500,
 	-- 怪物路径长度
-	BATTLE_COOP_ROAD_LENGTH = 185000,
+	BATTLE_COOP_ROAD_LENGTH = 195000,
 	-- 怪物路径单位长度
-	BATTLE_COOP_ROAD_UNIT_LENGTH = 1850,
+	BATTLE_COOP_ROAD_UNIT_LENGTH = 1950,
 	-- 怪物路径拐点
-	BATTLE_COOP_CORNER = 74870,
+	BATTLE_COOP_CORNER = 88892,
 	-- 战场塔数量
 	BATTLE_MAX_TOWER = 15,
-	-- 战斗初始点数
-	BATTLE_INIT_POINT = 100,
-	-- 战斗点数消耗步进
-	BATTLE_COST_POINT_STEP = 10,
 	-- 战斗飞行道具飞行时长
 	BATTLE_MISSILE_TIME = 200,
-	-- 碰撞体延迟生效时长
-	BATTLE_COLLIDER_DELAY_TIME = 200,
 	-- 塔十字站位表
 	BATTLE_TOWER_CROSS_MAP = {
 		{ 2, 6 },
@@ -87,47 +81,95 @@ Global.BattleConstants = {
 	-- 属性百分比限制
 	BATTLE_ATTRIBUTE_LIMIT = {
 		-- HP
-		[1] = {
+		[AttriType.HP] = {
 		},
 		--  ATTACK
-		[2] = {
+		[AttriType.ATTACK] = {
 
 		},
 		-- DEFENCE
-		[3] = {
+		[AttriType.DEFENCE] = {
 		},
 		-- ATKSPEED
-		[4] = {
-			min = 100,
+		[AttriType.ATKSPEED] = {
+			min = 280,
 			max = 5000,
 		},
 		-- SPEED
-		[5] = {
+		[AttriType.SPEED] = {
 			min = 0,
-			max = 1000,
+			max = 40000,
 		},
 		-- POINT
-		[6] = {
+		[AttriType.POINT] = {
 		},
 		-- EXATKSPEED
-		[7] = {
-			min = 100,
+		[AttriType.EXATKSPEED] = {
+			min = 175,
 			max = 5000000,
 		},
 		-- SPEEDPERCENT
-		[13] = {
+		[AttriType.SPEEDPERCENT] = {
 			min = 0.45,
 			max = 2,
 		},
 	},
 	-- 战斗参数默认值
 	BATTLE_PARAM_DEFAULT = {
-		0,	-- 上一个怪物
-		0,	-- 同一怪物攻击次数
-		0,	-- 总攻击次数
-		0,	-- 总额外攻击次数
-		0,	-- 当前连接数量
-		-1	-- 总连接数量
+		-- 上一个怪物
+		[BattleParamType.LASTMONSTER] = { 
+			value = 0,
+			unitType = BattleUnitType.TOWER
+		},	
+		-- 同一怪物攻击次数
+		[BattleParamType.SAMEMONSTERATTACKTIMES] = {
+		 	value = 0,
+			unitType = BattleUnitType.TOWER 
+		},	
+		-- 总攻击次数
+		[BattleParamType.ATTACKTIMES] = {
+		 	value = 0,
+			unitType = BattleUnitType.TOWER 
+		},	
+		-- 总额外攻击次数
+		[BattleParamType.EXTRAATTACKTIMES] = {
+		 	value = 0,
+			unitType = BattleUnitType.TOWER 
+		},	
+		-- 当前连接数量
+		[BattleParamType.CURCONNECTCOUNT] = {
+			value = 0,
+			unitType = BattleUnitType.TOWER 
+		},	
+		-- 总连接数量
+		[BattleParamType.CONNECTCOUNT] = { 
+			value = -1,
+			unitType = BattleUnitType.TOWER 
+		},
+		-- 总击杀数
+		[BattleParamType.KILLSCORE] = {
+			value = 0,
+			unitType = BattleUnitType.PLAYER,
+			notifyParam = true,
+		},
+		-- 太阳个数
+		[BattleParamType.SUNCOUNT] = {
+			value = 0,
+			unitType = BattleUnitType.PLAYER,
+			triggerType = BattleTriggerType.TRIGGERSTATE,
+			towerBaseId = 1033,
+			hitValues = {
+				[1] = 2,
+				[4] = 2,
+				[7] = 2
+			}
+		},
+		-- Combo
+		[BattleParamType.COMBO] = {
+			value = 0,
+			unitType = BattleUnitType.PLAYER,
+			notifyParam = true,
+		}
 	}
 }
 export('BattleConstants', BattleConstants)

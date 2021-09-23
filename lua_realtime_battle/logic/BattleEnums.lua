@@ -21,7 +21,7 @@ Global.ErrorCode = {
     HEROTALENT_TYPENOTMATCH = 1041,     -- 英雄天赋类型不一致
     HEROTALENT_NOTREADY = 1042,         -- 英雄天赋冷却中
 }
-export('UniqueRandType', UniqueRandType)
+export('ErrorCode', ErrorCode)
 
 -- 战斗缓冲行为类型
 Global.BattleFrameActionType = {
@@ -74,17 +74,22 @@ Global.GBCommandType = {
     PLAYERHP = 28, -- 玩家血量
     PERIOD = 29, -- 战斗阶段
     DAMAGE = 30, -- 伤害
-    MAX = 31,
+    FLAG = 31, -- 标记
+    GUIDE = 32, -- 引导
+    PLAYERPARAM = 33, -- 玩家参数
+    EMOJI = 34, -- 表情
+    MAX = 35,
 }
 export('GBCommandType', GBCommandType)
 
 -- 单位合成类型
 Global.BattleTowerMergeType = {
     ALL = 0,
-    MERGE = 1,    -- 合成
-    EXCHANGE = 2,    -- 交换
-    COPY = 3,    -- 复制
-    FIX = 4,    -- 营养
+    MERGE = 1,      -- 合成
+    EXCHANGE = 2,   -- 交换
+    COPY = 3,       -- 复制
+    FIX = 4,        -- 营养
+    REBUILD = 5,    -- 重构
     MAX = 5,
 }
 export('BattleTowerMergeType', BattleTowerMergeType)
@@ -106,5 +111,8 @@ Global.BattleDamageType = {
     CRITICAL = 2,   -- 暴击
     POISON = 3,     -- 毒
     POINT = 4,      -- SP
-    MAX = 5,
+    HEAL = 5,       -- 回血
+    TDAMAGE = 6,    -- 触发伤害
+    MAX = 7,
 }
+export('BattleDamageType', BattleDamageType)

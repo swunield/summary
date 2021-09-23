@@ -2,7 +2,7 @@
 --- class BattleTimerTask
 -- @classmod BattleTimerTask
 -- 计时器任务
-class('BattleTimerTask')
+BattleTimerTask = xclass('BattleTimerTask')
 
 ---Constructor
 function BattleTimerTask:ctor( ... )
@@ -23,14 +23,13 @@ function BattleTimerTask:ctor( ... )
 	self.time = 0						-- 任务时间
 end
 
-classend()
 
 
 ---
 --- class BattleTimer
 -- @classmod BattleTimer
 -- 计时器，所有时间都以毫秒计
-class('BattleTimer')
+BattleTimer = xclass('BattleTimer')
 
 local table_insert = table.insert
 
@@ -317,6 +316,3 @@ function BattleTimer:GenerateTaskId( ... )
 	self.taskIdGenerator = self.taskIdGenerator + 1
 	return self.taskIdGenerator
 end
-
-classend()
-export('BattleTimer', BattleTimer)

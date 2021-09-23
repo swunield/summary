@@ -2,18 +2,19 @@
 --- class BattleMonster
 -- @classmod BattleMonster
 -- 战斗怪物
-class('BattleMonster', BattleUnit)
+BattleMonster = xclass('BattleMonster', BattleUnit)
 
 local os_clock = os.clock
 local math_floor = math.floor
+local math_ceil = math.ceil
 local BattleTriggerParam_New = BattleTriggerParam.New
+local BattleTriggerParam_Destroy = BattleTriggerParam.Destroy
 local FLAGMAP = Utils.BuildFlagMap
 
 local TSMonster = gModel.TSMonster
 
 ---Constructor
 function BattleMonster:ctor( ... )  
-	self.super = Super( ...)
 	self.super.unitType = BattleUnitType.MONSTER
 
 	self.monsterId = 0				-- 实例Id
@@ -32,7 +33,7 @@ function BattleMonster:Serialize( ... )
 	local tMonster = TSMonster:new{}
 	tMonster.Id = self.monsterId
 	tMonster.ResId = self.monsterRes.id
-	tMonster.CurHP = self.curHP
+	tMonster.CurHP = self.curHP or -1
 	tMonster.Position = self.position
 	tMonster.PendingFrameCount = self.pendingFrameCount ~= 0 and self.pendingFrameCount or nil
 	tMonster.Unit = self.super:Serialize()
@@ -43,7 +44,7 @@ function BattleMonster:DeSerialize( _tMonster, _player, ... )
 	if not _tMonster or not _player then
 		return
 	end
-	self:Init(GameResMgr.GetBattleMonsterRes(_tMonster.ResId), _tMonster.Id, _player, _tMonster.CurHP)
+	self:Init(GameResMgr.GetBattleMonsterRes(_tMonster.ResId), _tMonster.Id, _player, _tMonster.CurHP ~= -1 and _tMonster.CurHP or false)
 	self.position = _tMonster.Position
 	self.pendingFrameCount = _tMonster.PendingFrameCount or 0
 	self.super:DeSerialize(_tMonster.Unit)
@@ -78,26 +79,44 @@ function BattleMonster:Init( _monsterRes, _monsterId, _player, _monsterHP, _posi
 	-- 注册天赋
 	self:RegisterTalentList(_monsterRes.talentList, self)
 
-	-- 父类初始化
-	self.super:Init()
-
 	-- 属性基础值
+	local extraHP = 0
+	if self.monsterRes.type == MonsterType.BOSS then
+		extraHP = gBattleLogic:GetTotalMonsterHP(_player)
+	end
 	local monsterHPScale = self.monsterRes.hpScale / Constants.PERCENT_MAX
-	self.baseAttriList[AttriType.HP] = math_floor(BattleFormula.GetValue(self.monsterRes.hpId, self) * monsterHPScale)
+	self.baseAttriList[AttriType.HP] = math_floor(BattleFormula.GetValue(self.monsterRes.hpId, self) * monsterHPScale) + extraHP
 	self.baseAttriList[AttriType.SPEED] = BattleFormula.GetValue(self.monsterRes.speedId, self)
 	self.baseAttriList[AttriType.DEFENCE] = Constants.BATTLE_DEFENCE_INIT
 	-- 掉落点数
 	self.baseAttriList[AttriType.POINT] = BattleFormula.GetValue(self.monsterRes.pointId, self)
 
-	self.maxHP = self:GetMaxHP()
-	self.curHP = _monsterHP or self.maxHP
-	self.pendingFrameCount = _monsterRes.pendingFrameCount
+	self.pendingFrameCount = _monsterRes.pendingTime == 0 and 0 or math_ceil(_monsterRes.pendingTime / Constants.BATTLE_FRAME_TIME)
 
 	if _position and _position > 0 then
 		self:SetPosition(_position, 0)
 	end
 
+	-- 血量初始化
+	self.maxHP = self:GetMaxHP()
+	self.curHP = _monsterHP or false
+
+	-- 父类初始化
+	self.super:Init()
+
 	return true
+end
+
+-- 进入战斗 
+function BattleMonster:Enter( ... )
+	if self.pendingFrameCount ~= 0 then
+		return
+	end
+
+	-- 父类进入
+	self.super:Enter(...)
+
+	self.curHP = self.curHP or self.maxHP
 end
 
 T_MONSTER_UPDATE = 0
@@ -109,11 +128,22 @@ function BattleMonster:Update( _deltaTime, ... )
 	-- 缓冲期间
 	if self.pendingFrameCount ~= 0 then
 		self.pendingFrameCount = self.pendingFrameCount - 1
+		if self.pendingFrameCount == 0 then
+			-- 缓冲结束，进入战斗
+			self:Enter()
+		end
 		return
 	end
 
-	-- 父类更新
-	self.super:Update(_deltaTime, ...)
+	-- 更新状态
+	local carryBufferList = self.carryBufferList
+	local bufferCount = #carryBufferList
+	for i = bufferCount, 1, -1 do
+		local buffer = carryBufferList[i]
+		if buffer then
+			buffer:Update(_deltaTime)
+		end
+	end
 
 	-- 移动
 	-- local time = os_clock()
@@ -144,7 +174,7 @@ function BattleMonster:Move( _speed, ... )
 		return
 	end
 	-- 眩晕不移动
-	if self:HasUnitFlag(BattleUnitFlag.DIZZY) then
+	if HasBattleFlag(self.unitFlag, BattleUnitFlag.DIZZY) then
 		-- 通知前端更新怪物位置
 		local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.MONSTERMOVE, self.player.playerId, self.monsterId, self.position, 0)
 		return
@@ -167,25 +197,32 @@ end
 
 -- isRealDamage 真实伤害 无视护甲\免伤
 function BattleMonster:OnAttackDamage( _attackerUnit, _damage, _isRealDamage, _damageEffectId, _damageType, ... )  
+	if self.pendingFrameCount ~= 0 then
+		return
+	end
+
 	-- 触发被击
 	local triggerParam = BattleTriggerParam_New(self, _attackerUnit, { _attackerUnit }, tostring(_damage))
 	gBattleTrigger:FireTrigger(BattleTriggerType.ATTACKED, triggerParam)
+	BattleTriggerParam_Destroy(triggerParam)
 
 	local curHP = self.curHP
+	local maxHP = self.maxHP
 	-- _damage = _damage * 100
 	local damage = _damage > curHP and curHP or _damage
 	curHP = curHP - damage
+	curHP = curHP > maxHP and maxHP or curHP
 	self.curHP = curHP
 
-	-- gBattleManager:AddBattleLog(string.format('Monster Attacked Frame[%d] Monster[%s] Attacker[%s] Damage[%d] HP[%d]', gBattleFrameCount, self.unitId, _attackerUnit.unitId, _damage, self.curHP))
+	-- gBattleManager:AddBattleLog(string.format('Monster Attacked Frame[%d] Monster[%d] Attacker[%d] Damage[%d] HP[%d]', gBattleFrameCount, self.unitId, _attackerUnit.unitId, _damage, self.curHP))
 
 	if G_SendGBCommand then
 		-- 通知前端播放特效
 		if _damageEffectId then
-			G_SendGBCommand(GBCommandType.EFFECT, true, self.player.playerId, self.unitId, _damageEffectId)
+			local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.EFFECT, true, self.player.playerId, self.unitId, _damageEffectId)
 		end
 		-- 通知前端更新怪物血量
-		G_SendGBCommand(GBCommandType.MONSTERHP, self.player.playerId, self.monsterId, _damage, _damageType or BattleDamageType.NORMAL)
+		local __ = G_SendGBCommand and G_SendGBCommand(GBCommandType.MONSTERHP, self.player.playerId, self.monsterId, _damage, _damageType or BattleDamageType.NORMAL)
 	end
 
 	-- 校验怪物死亡
@@ -203,10 +240,12 @@ function BattleMonster:OnMonsterDie( _attackerUnit, ... )
 	-- 触发死亡
 	local triggerParam = BattleTriggerParam_New(self, _attackerUnit, { _attackerUnit }, nil)
 	gBattleTrigger:FireTrigger(BattleTriggerType.DEATH, triggerParam)
+	BattleTriggerParam_Destroy(triggerParam)
 
 	-- 触发击杀
 	triggerParam = BattleTriggerParam_New(_attackerUnit, _attackerUnit, nil, nil)
 	gBattleTrigger:FireTrigger(BattleTriggerType.KILL, triggerParam)
+	BattleTriggerParam_Destroy(triggerParam)
 
 	-- 怪物死亡
 	self.player:RemoveMonster(self.monsterId, FLAGMAP(BattleUnitLeaveType.DIE))
@@ -221,7 +260,13 @@ function BattleMonster:Clone( _monster, ... )
 end
 
 function BattleMonster:IsValid( ... )
-	return not self.isDie and self.pendingFrameCount == 0
+	return not (self.isDie or self.pendingFrameCount ~= 0)
 end
 
-classend()
+function BattleMonster:CanAttack( ... )
+	return not (self.isDie or HasBattleFlag(self.unitFlag, BattleUnitFlag.DIZZY))
+end
+
+function BattleMonster:IsHaloValid( ... )
+	return not HasBattleFlag(self.unitFlag, BattleUnitFlag.DIZZY)
+end

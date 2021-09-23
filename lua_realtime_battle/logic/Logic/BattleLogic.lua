@@ -1,12 +1,12 @@
 ---
 --- class BattleLogic
 -- @classmod BattleLogic
-class('BattleLogic')
+BattleLogic = xclass('BattleLogic')
 
 local math_floor = math.floor
 
 ---Constructor
-function BattleLogic:ctor( _isLocal, ... )
+function BattleLogic:ctor( ... )
 	self.playerList = {}
 	self.waveNum = 0			-- 波数
 	self.roundNum = 0			-- 回合数
@@ -15,7 +15,7 @@ function BattleLogic:ctor( _isLocal, ... )
 	self.roundDuration = 0		-- 当前回合持续时间
 	self.battleRes = false 		-- 战斗配置
 	self.monsterHP = 0			-- 怪物血量，公式用
-	self.isLocal = _isLocal or false -- 是否本地
+	self.isLocal = false 		-- 是否本地
 end
 
 function BattleLogic:Serialize( _tLogic, ... )
@@ -23,6 +23,7 @@ function BattleLogic:Serialize( _tLogic, ... )
 	_tLogic.WaveNum = self.waveNum
 	_tLogic.RoundStartWaveNum = self.roundStartWaveNum
 	_tLogic.RoundStartTime = self.roundStartTime
+	_tLogic.Freezing = gBattleFreezing and 1 or 0
 end
 
 function BattleLogic:DeSerialize( _tLogic, ... )
@@ -33,14 +34,16 @@ function BattleLogic:DeSerialize( _tLogic, ... )
 	self.waveNum = _tLogic.WaveNum
 	self.roundStartWaveNum = _tLogic.RoundStartWaveNum
 	self.roundStartTime = _tLogic.RoundStartTime
+	gBattleFreezing = _tLogic.Freezing == 1
 end
 
 function BattleLogic:Finalize( ... )
 	-- body
 end
 
-function BattleLogic:Initialize( _battleType, ... )
-	self.battleRes = GameResMgr.GetBattleRes(_battleType)
+function BattleLogic:Initialize( _battleType, _battleResId, ... )
+	local battleResId = _battleResId or _battleType
+	self.battleRes = GameResMgr.GetBattleRes(battleResId)
 end
 
 function BattleLogic:Update( _deltaTime, ... )
@@ -88,4 +91,6 @@ function BattleLogic:RefreshMonsterHP( ... )
 	self.monsterHP = math_floor(BattleFormula.GetValue(normalMonsterRes.hpId) * monsterHPScale)
 end
 
-classend()
+function BattleLogic:GetTotalMonsterHP( _player, ... )
+	return 0
+end

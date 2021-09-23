@@ -2,7 +2,7 @@
 --- class BattleTower
 -- @classmod BattleTower
 -- 战斗塔
-class('BattleTower', BattleUnit)
+BattleTower = xclass('BattleTower', BattleUnit)
 
 local table_insert = table.insert
 local table_remove = table.remove
@@ -10,13 +10,16 @@ local math_floor = math.floor
 local math_ceil = math.ceil
 local os_clock = os.clock
 local BattleTriggerParam_New = BattleTriggerParam.New
+local BattleTriggerParam_Destroy = BattleTriggerParam.Destroy
 
 local TSTower = gModel.TSTower
 local TSStar = gModel.TSStar
+local TS2Int = gModel.TS2Int
+local TS3Int = gModel.TS3Int
+local TS1Int1String = gModel.TS1Int1String
 
 ---Constructor
 function BattleTower:ctor( ... )  
-	self.super = Super( ...)
 	self.super.unitType = BattleUnitType.TOWER
 
 	self.towerId = 0						-- 实例id
@@ -30,11 +33,15 @@ function BattleTower:ctor( ... )
 	self.replaceTargetId = 0				-- 替代的目标Id
 
 	self.starList = {} 						-- 飞行道具发射源列表
-	self.paramMap = {}						-- 参数列表
 	self.triggerFlagMap = {}				-- 触发器标记
+	self.starAtkSpeed = 0
+	self.starExtraSpeed = 0
+
+	self.atkEffectId = 0					-- 攻击特效
 
 	self.monsterDistanceList = false		-- 怪物距离数值表
 	self.gradeBufferLayerList = {}			-- 升阶关联状态层
+	self.hasNormalAttack = false
 end
 
 function BattleTower:Serialize( ... )
@@ -44,26 +51,38 @@ function BattleTower:Serialize( ... )
 	tTower.Star = self.star
 	tTower.TargetResId = self.replaceTargetId ~= 0 and self.replaceTargetId or nil
 	tTower.StarList = {}
-	for i = 1, #self.starList do
+	for i = 1, tTower.Star do
 		local star = self.starList[i]
 		local tStar = TSStar:new{}
+		tStar.Speed = star.speed ~= 0 and star.speed or nil
 		tStar.NextFireTime = star.nextFireTime ~= 0 and star.nextFireTime or nil
-		tStar.NextExtraFireTime = star.nextExtraFireTime ~= 0 and star.nextExtraFireTime or nil
 		tStar.FireInterval = star.fireInterval ~= 0 and star.fireInterval or nil
+		tStar.ExtraSpeed = star.extraSpeed ~= 0 and star.extraSpeed or nil
+		tStar.NextExtraFireTime = star.nextExtraFireTime ~= 0 and star.nextExtraFireTime or nil
 		tStar.ExtraFireInterval = star.extraFireInterval ~= 0 and star.extraFireInterval or nil
+		tStar.ExtraFreezeTime = star.extraFreezeTime ~= 0 and star.extraFreezeTime or nil
 		table_insert(tTower.StarList, tStar)
 	end
-	for paramType, paramValue in pairs(self.paramMap) do
-		if not tTower.ParamMap then
-			tTower.ParamMap = {}
+	tTower.StarAtkSpeed = self.starAtkSpeed
+	tTower.StarExtraSpeed = self.starExtraSpeed
+	for paramType, param in pairs(self.paramMap) do
+		if not tTower.ParamList then
+			tTower.ParamList = {}
 		end
-		tTower.ParamMap[paramType] = paramValue
+		local tValue = TS3Int:new{}
+		tValue.Arg0 = paramType
+		tValue.Arg1 = param.value
+		tValue.Arg2 = param.nextValue ~= 0 and param.nextValue or nil
+		table_insert(tTower.ParamList, tValue)
 	end
 	for triggerType, triggerValue in pairs(self.triggerFlagMap) do
-		if not tTower.TriggerFlagMap then
-			tTower.TriggerFlagMap = {}
+		if not tTower.TriggerFlagList then
+			tTower.TriggerFlagList = {}
 		end
-		tTower.TriggerFlagMap[triggerType] = triggerValue
+		local tValue = TS1Int1String:new{}
+		tValue.Arg0 = triggerType
+		tValue.Arg1 = triggerValue
+		table_insert(tTower.TriggerFlagList, tValue)
 	end
 	tTower.Unit = self.super:Serialize()
 	return tTower
@@ -79,31 +98,42 @@ function BattleTower:DeSerialize( _tTower, _player, _posIndex, ... )
 	for i = 1, #_tTower.StarList do
 		local tStar = _tTower.StarList[i]
 		table_insert(self.starList, {
+			speed = tStar.Speed or 0,
 			nextFireTime = tStar.NextFireTime or 0, 
-			fireInterval = tStar.FireInterval or 0, 
+			fireInterval = tStar.FireInterval or 0,
+			extraSpeed = tStar.ExtraSpeed or 0, 
 			nextExtraFireTime = tStar.NextExtraFireTime or 0,
 			extraFireInterval = tStar.ExtraFireInterval or 0,
+			extraFreezeTime = tStar.ExtraFreezeTime or 0,
 		})
 	end
+	self.starAtkSpeed = _tTower.StarAtkSpeed
+	self.starExtraSpeed = _tTower.StarExtraSpeed
 	self.replaceTargetId = _tTower.TargetResId or 0
-	if _tTower.ParamMap then
-		for paramType, paramValue in pairs(_tTower.ParamMap) do
-			self.paramMap[paramType] = paramValue
+	if _tTower.ParamList then
+		for i = 1, #_tTower.ParamList do
+			local tValue = _tTower.ParamList[i]
+			self.paramMap[tValue.Arg0].value = tValue.Arg1
+			self.paramMap[tValue.Arg0].nextValue = tValue.Arg2
 		end
 	end
-	if _tTower.TriggerFlagMap then
-		for triggerType, triggerValue in pairs(_tTower.TriggerFlagMap) do
-			self.triggerFlagMap[triggerType] = triggerValue
+	if _tTower.TriggerFlagList then
+		for i = 1, #_tTower.TriggerFlagList do
+			local tValue = _tTower.TriggerFlagList[i]
+			self.triggerFlagMap[tValue.Arg0] = tValue.Arg1
+			-- 触发标记改变
+			self:OnTriggerFlagChange(tValue.Arg0, tValue.Arg1)
 		end
 	end
 
 	gBattleManager:RegisterSnapShotPushEndEvent(function( ... )
 		local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.ADDTOWER, self.player.playerId, self.towerRes, self.star, self.posIndex, self)
-		local curConnectCount = self.paramMap[CURCONNECTCOUNT]
-		if curConnectCount then
-			local timeScale = curConnectCount <= 1 and 0 or (1 + (connectCount - 2) * 0.4)
+		local connectParam = self.paramMap[BattleParamType.CONNECTCOUNT]
+		if connectParam then
+			local timeScale = connectParam.value <= 1 and 0 or (1 + (connectParam.value - 2) * 0.4)
 			_ = G_SendGBCommand and G_SendGBCommand(GBCommandType.TIMESCALE, self.unitId, timeScale)
 		end
+		self:NotifyAllUnitFlag()
 	end)
 end
 
@@ -126,6 +156,7 @@ function BattleTower:Init( _towerRes, _star, _towerId, _posIndex, _player, ... )
 	self.posIndex = _posIndex
 	self.grade = _player:GetTowerGrade(_towerRes.id)
 	self.level = _towerRes.level
+	self.atkEffectId = _towerRes.atkEffectIds[1] or 0
 
 	-- 初始标记
 	if self.towerRes.birthFlag ~= 0 then
@@ -138,9 +169,14 @@ function BattleTower:Init( _towerRes, _star, _towerId, _posIndex, _player, ... )
 	self.baseAttriList[AttriType.EXATKSPEED] = BattleFormula.GetValue(self.towerRes.extraAtkSpeed, self, nil)
 	self.baseAttriList[AttriType.CRITICAL] = Constants.BATTLE_CRITICALRATE_INIT
 	self.baseAttriList[AttriType.CRITICALSCALE] = Constants.BATTLE_CRITICALSCALE_INIT + _player.criticalScale
+	self.hasNormalAttack = self.towerRes.attack ~= 0
 
 	-- 注册天赋
 	self:RegisterTalentList(_towerRes.talentList, self)
+
+	-- 注册觉醒天赋
+	local awakenTalentId = _player:GetTowerAwaken(_towerRes.id)
+	self:RegisterTalent(awakenTalentId, self)
 
 	-- 父类初始化
 	self.super:Init()
@@ -149,10 +185,7 @@ function BattleTower:Init( _towerRes, _star, _towerId, _posIndex, _player, ... )
 	self.starList = self:InitStar()
 
 	-- 初始化参数
-	for i = 1, #self.towerRes.paramList do
-		local paramType = self.towerRes.paramList[i]
-		self.paramMap[paramType] = BattleConstants.BATTLE_PARAM_DEFAULT[paramType]
-	end
+	self:InitParam(self.towerRes.paramList)
 
 	-- 距离数值表
 	self.monsterDistanceList = BattleMonsterDistance[_posIndex]
@@ -167,89 +200,113 @@ function BattleTower:InitStar( ... )
 		return false
 	end
 
+	self.starAtkSpeed = self:GetAttribute(AttriType.ATKSPEED)
+	self.starExtraSpeed = self:GetAttribute(AttriType.EXATKSPEED)
+
 	local starList = {}
-	local interval = math_floor(self:GetAtkSpeed() / self.star)
-	local extraInterval = math_floor(self:GetExAtkSpeed() / self.star)
+	local interval = math_floor(self.starAtkSpeed / self.star)
+	local extraInterval = math_floor(self.starExtraSpeed / self.star)
 	-- 7星禁用额外攻击
 	if self.star == Constants.BATTLE_MAX_STAR and self.towerRes.birthFlag == BattleUnitFlag.GROWUP then
 		extraInterval = 0
 	end
 	for i = 1, self.star do
 		table_insert(starList, { 
-			nextFireTime = gBattleTime + self:GetAtkSpeed(), 
-			fireInterval = interval * (i - 1), 
-			nextExtraFireTime = extraInterval == 0 and 0 or (gBattleTime + self:GetExAtkSpeed()),
-			extraFireInterval = extraInterval * (i - 1),
+			speed = self.starAtkSpeed,
+			nextFireTime = gBattleTime, 
+			fireInterval = interval * i, 
+			extraSpeed = self.starExtraSpeed,
+			nextExtraFireTime = extraInterval == 0 and 0 or gBattleTime,
+			extraFireInterval = extraInterval * i,
+			extraFreezeTime = 0,
 		})
 	end
 	return starList
 end
 
 T_PERF = 0
-
 function BattleTower:Update( _deltaTime, ... )
-	-- 父类更新
-	self.super:Update(_deltaTime, ...)
+	-- 更新状态
+	local carryBufferList = self.carryBufferList
+	local bufferCount = #carryBufferList
+	for i = bufferCount, 1, -1 do
+		local buffer = carryBufferList[i]
+		if buffer then
+			buffer:Update(_deltaTime)
+		end
+	end
+
+	local canAttack = not HasBattleFlag(self.unitFlag, BattleUnitFlag.SILENCE)
+	local battleTime = gBattleTime
+	local starCount = self.star
+	local starList = self.starList
+	local hasNormalAttack = self.hasNormalAttack
 
 	-- 发射子弹
-	for i = 1, self.star do
-		local star = self.starList[i]
+	for i = 1, starCount do
+		local star = starList[i]
 		-- 普攻
-		-- local time = os_clock()
-		-- T_PERF = T_PERF + os_clock() - time
-		if self.towerRes.attack ~= 0 then
+		if hasNormalAttack then
 			-- 发射
-			if gBattleTime >= star.nextFireTime + star.fireInterval then
+			if battleTime >= star.nextFireTime + star.fireInterval then
 				-- 下次发射时间
-				local atkSpeed = self:GetAtkSpeed()
-				star.nextFireTime = star.nextFireTime + atkSpeed
-				star.fireInterval = math_floor(atkSpeed / self.star) * (i - 1)
-				if self:CanAttack() then
+				if i == 1 then
+					self.starAtkSpeed = self:GetAttribute(AttriType.ATKSPEED)
+				end
+				local atkSpeed = self.starAtkSpeed
+				star.nextFireTime = star.nextFireTime + star.speed
+				star.speed = atkSpeed
+				star.fireInterval = math_floor(atkSpeed / starCount) * i
+				local targets = false
+				if canAttack then
 					-- 寻找目标，并确定命中时间
 					local targetId = self:GetTargetId()
-					local targets = BattleTarget.FindTarget(targetId, self)
+					targets = BattleTarget.FindTarget(targetId, self)
 					local monster = #targets > 0 and targets[1] or false
 					if monster then
-						-- 同一怪物攻击次数
-						local paramMap = self.paramMap
-						local lastMonsterId = paramMap[BattleParamType.LASTMONSTER]
-						if lastMonsterId then
-							paramMap[BattleParamType.SAMEMONSTERATTACKTIMES] = lastMonsterId == monster.monsterId and paramMap[BattleParamType.SAMEMONSTERATTACKTIMES] + 1 or 1
-							paramMap[BattleParamType.LASTMONSTER] = monster.monsterId
+						-- 总攻击次数
+						local attackTimes = 0
+						local attackTimesParam = self.paramMap[BattleParamType.ATTACKTIMES]
+						if attackTimesParam then
+							attackTimesParam.value = attackTimesParam.value + 1
+							attackTimes = attackTimesParam.value
 						end
-						local attackTimes = paramMap[BattleParamType.ATTACKTIMES]
-						if attackTimes then
-							attackTimes = attackTimes + 1
-							paramMap[BattleParamType.ATTACKTIMES] = attackTimes
-						end
-						attackTimes = attackTimes or 0
 						-- 插入子弹
-						local distanceIndex = math_ceil(monster.position / BattleConstants.BATTLE_ROAD_UNIT_LENGTH)
-						if distanceIndex == 0 then
-							distanceIndex = 1
-						end
-						local missileFrameCount = self.monsterDistanceList[distanceIndex]
-						local hitFrame = gBattleFrameCount + missileFrameCount
-						self.player:AddMissile(self, monster.unitId, self:GetAttack(), hitFrame, self.towerRes.atkEffectId, i, attackTimes)
+						local hitFrame = gBattleFrameCount + self:GetPositionDistance(monster.position)
+						local damage = self:GetAttribute(AttriType.ATTACK)
+						self.player:AddMissile(self, monster.unitId, damage, hitFrame, self.atkEffectId, i, attackTimes)
 					end
 				end
+				self.curTargets = targets
 			end
 		end
 		-- 附属行为
-		if star.nextExtraFireTime ~= 0 and gBattleTime >= star.nextExtraFireTime + star.extraFireInterval then
-			-- 触发附属行为
-			local extraAttackTimes = self.paramMap[BattleParamType.EXTRAATTACKTIMES]
-			if extraAttackTimes then
-				extraAttackTimes = extraAttackTimes + 1
-				self.paramMap[BattleParamType.EXTRAATTACKTIMES] = extraAttackTimes
+		if star.nextExtraFireTime ~= 0 then
+			if not canAttack then
+				star.extraFreezeTime = star.extraFreezeTime + _deltaTime
+			elseif battleTime >= star.nextExtraFireTime + star.extraFireInterval + star.extraFreezeTime then
+				-- 触发附属行为
+				local extraAttackTimes = 0
+				local lastStarExtraAttackTimes = 0
+				local extraAttackTimesParam = self.paramMap[BattleParamType.EXTRAATTACKTIMES]
+				if extraAttackTimesParam then
+					extraAttackTimesParam.value = extraAttackTimesParam.value + 1
+					extraAttackTimes = extraAttackTimesParam.value
+					lastStarExtraAttackTimes = i == starCount and math_floor(extraAttackTimes / starCount) or 0
+				end
+				local triggerParam = BattleTriggerParam_New(self, self, nil, { starIndex = i, attackTimes = extraAttackTimes, isLastStar = i == starCount, lastStarAttackTimes = lastStarExtraAttackTimes })
+				gBattleTrigger:FireTrigger(BattleTriggerType.EXATTACK, triggerParam)
+				BattleTriggerParam_Destroy(triggerParam)
+				-- 下次发射时间
+				if i == 1 then
+					self.starExtraSpeed = self:GetAttribute(AttriType.EXATKSPEED)
+				end
+				local exAtkSpeed = self.starExtraSpeed
+				star.nextExtraFireTime = star.nextExtraFireTime + star.extraSpeed + star.extraFreezeTime
+				star.extraSpeed = exAtkSpeed
+				star.extraFireInterval = math_floor(exAtkSpeed / starCount) * i
+				star.extraFreezeTime = 0
 			end
-			extraAttackTimes = extraAttackTimes or 0
-			local triggerParam = BattleTriggerParam_New(self, self, nil, { starIndex = i, attackTimes = extraAttackTimes })
-			gBattleTrigger:FireTrigger(BattleTriggerType.EXATTACK, triggerParam)
-			-- 下次发射时间
-			local exAtkSpeed = self:GetExAtkSpeed()
-			star.nextExtraFireTime = star.nextExtraFireTime + exAtkSpeed
-			star.extraFireInterval = math_floor(exAtkSpeed / self.star) * (i - 1)
 		end
 	end
 end
@@ -268,11 +325,11 @@ end
 
 function BattleTower:GetTargetId( ... )
 	local targetId = self.towerRes.targetId
-	if self:HasUnitFlag(BattleUnitFlag.LOCKRANDOM) then
+	if HasBattleFlag(self.unitFlag, BattleUnitFlag.LOCKRANDOM) then
 		targetId = Constants.BATTLE_LOCKRANDOM_TARGET_ID
 		return targetId
 	end
-	if self:HasUnitFlag(BattleUnitFlag.LOCKFIRST) then
+	if HasBattleFlag(self.unitFlag, BattleUnitFlag.LOCKFIRST) then
 		targetId = Constants.BATTLE_LOCKFIRST_TARGET_ID
 		return targetId
 	end
@@ -283,14 +340,15 @@ function BattleTower:GetTargetId( ... )
 end
 
 function BattleTower:RefreshTowerConnect( _list, ... )
-	if not self.paramMap[BattleParamType.CONNECTCOUNT] then
+	local connectParam = self.paramMap[BattleParamType.CONNECTCOUNT]
+	if not connectParam then
 		return
 	end
-	self.paramMap[BattleParamType.CONNECTCOUNT] = 0
+	connectParam.value = 0
 	local nextToPosList = BattleConstants.BATTLE_TOWER_CROSS_MAP[self.posIndex]
 	for i = 1, #nextToPosList do
 		local nextToTower = self.player.towerList[nextToPosList[i]]
-		if nextToTower and nextToTower:HasUnitFlag(BattleUnitFlag.CONNECT) and nextToTower.paramMap[BattleParamType.CONNECTCOUNT] == -1 then
+		if nextToTower and HasBattleFlag(nextToTower.unitFlag, BattleUnitFlag.CONNECT) and nextToTower.paramMap[BattleParamType.CONNECTCOUNT].value == -1 then
 			nextToTower:RefreshTowerConnect(_list)
 		end 
 	end
@@ -299,39 +357,46 @@ end
 
 function BattleTower:SetConnectCount( _count, ... )
 	local paramMap = self.paramMap
-	local connectCount = paramMap[BattleParamType.CONNECTCOUNT]
-	if not connectCount then
+	local connectParam = paramMap[BattleParamType.CONNECTCOUNT]
+	if not connectParam then
 		return
 	end
-	local curConnectCount = paramMap[BattleParamType.CURCONNECTCOUNT]
-	if not curConnectCount then
+	local curConnectParam = paramMap[BattleParamType.CURCONNECTCOUNT]
+	if not curConnectParam then
 		return
 	end
-	connectCount = _count
-	paramMap[BattleParamType.CONNECTCOUNT] = connectCount
-	if curConnectCount == connectCount then
+	connectParam.value = _count
+	if curConnectParam.value == _count then
 		return
 	end
-	curConnectCount = connectCount
-	paramMap[BattleParamType.CURCONNECTCOUNT] = curConnectCount
+	curConnectParam.value = _count
 	-- 添加Buffer
 	self:AddBuffer((Constants.BATTLE_CONNECT_BUFFER + self.towerRes.level) * 10 + 1, self, false)
 	-- 通知前端刷新速度
-	local timeScale = curConnectCount <= 1 and 0 or (1 + (connectCount - 2) * 0.4)
+	local timeScale = _count <= 1 and 0 or (1 + (_count - 2) * 0.4)
 	local _ = G_SendGBCommand and G_SendGBCommand(GBCommandType.TIMESCALE, self.unitId, timeScale)
 end                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
 
 function BattleTower:GetConnectCount( ... )
-	return self.paramMap[BattleParamType.CONNECTCOUNT]
+	local connectParam = self.paramMap[BattleParamType.CONNECTCOUNT]
+	return connectParam and connectParam.value or 0
 end
 
 function BattleTower:ResetConnectCount( ... )
-	if self.paramMap[BattleParamType.CONNECTCOUNT] then
-		self.paramMap[BattleParamType.CONNECTCOUNT] = -1
+	local connectParam = self.paramMap[BattleParamType.CONNECTCOUNT]
+	if connectParam then
+		connectParam.value = -1
 	end
 end
 
 -- 是否可以合成
+local MergeFlagMap = { 
+	[BattleUnitFlag.REPRODUCE] = BattleUnitFlag.REPRODUCE, 
+	[BattleUnitFlag.SUMMON] = BattleUnitFlag.SUMMON, 
+	[BattleUnitFlag.COMBO] = BattleUnitFlag.COMBO,
+	[BattleUnitFlag.KILL] = BattleUnitFlag.KILL,
+	[BattleUnitFlag.HACKER] = BattleUnitFlag.HACKER
+}
 function BattleTower:CanMerge( _targetTower, ... )
 	if not _targetTower then
 		return false, nil, 0
@@ -348,6 +413,9 @@ function BattleTower:CanMerge( _targetTower, ... )
 	if self:CanCopy(_targetTower) then
 		return true, BattleTowerMergeType.COPY, 0
 	end
+	if self:CanRebuild(_targetTower) then
+		return true, BattleTowerMergeType.REBUILD, 0
+	end
 	-- 已满级
 	if self.star == Constants.BATTLE_MAX_STAR then
 		return false, nil, 0
@@ -360,25 +428,12 @@ function BattleTower:CanMerge( _targetTower, ... )
 	if targetTowerRes.id ~= towerRes.id and towerRes.birthFlag ~= BattleUnitFlag.FIT and targetTowerRes.birthFlag ~= BattleUnitFlag.FIT then
 		return false, nil, 0
 	end
-	local mergeUnitFlag = 0
-	if towerRes.birthFlag == BattleUnitFlag.REPRODUCE or targetTowerRes.birthFlag == BattleUnitFlag.REPRODUCE then
-		-- 繁衍
-		mergeUnitFlag = BattleUnitFlag.REPRODUCE
-	elseif towerRes.birthFlag == BattleUnitFlag.SUMMON or targetTowerRes.birthFlag == BattleUnitFlag.SUMMON then
-		-- 召唤
-		mergeUnitFlag = BattleUnitFlag.SUMMON
-	end
+	local mergeUnitFlag = MergeFlagMap[towerRes.birthFlag] or MergeFlagMap[targetTowerRes.birthFlag] or 0
 	return true, BattleTowerMergeType.MERGE, mergeUnitFlag
 end
 
 -- 是否可以交换
 function BattleTower:CanExchange( _targetTower,  ... )
-	if not _targetTower then
-		return false
-	end
-	if _targetTower.star ~= self.star then
-		return false
-	end
 	if _targetTower.towerRes.id == self.towerRes.id then
 		return false
 	end
@@ -387,12 +442,6 @@ end
 
 -- 是否可以复制
 function BattleTower:CanCopy( _targetTower, ... )
-	if not _targetTower then
-		return false
-	end
-	if _targetTower.star ~= self.star then
-		return false
-	end
 	if _targetTower.towerRes.id == self.towerRes.id then
 		return false
 	end
@@ -401,21 +450,20 @@ end
 
 -- 是否可以营养
 function BattleTower:CanFix( _targetTower, ... )
-	if not _targetTower then
-		return false
-	end
-	if _targetTower.star ~= self.star then
-		return false
-	end
 	if self.star == Constants.BATTLE_MAX_STAR then
 		return false
 	end
 	return self.towerRes.birthFlag == BattleUnitFlag.FIX
 end
 
+-- 是否可以重构
+function BattleTower:CanRebuild( _targetTower, ... )
+	return HasBattleFlag(self.unitFlag, BattleUnitFlag.REBUILD)
+end
+
 -- 是否可以攻击
 function BattleTower:CanAttack( ... )
-	return not self:HasUnitFlag(BattleUnitFlag.SILENCE)
+	return not HasBattleFlag(self.unitFlag, BattleUnitFlag.SILENCE)
 end
 
 function BattleTower:OnUpgrade( _grade, ... )
@@ -436,9 +484,12 @@ function BattleTower:GetLevel( ... )
 	return self.level
 end
 
-function BattleTower:FireTrigger( _isFlagTrigger, _triggerType, _triggerValue, ... )
+function BattleTower:FireTrigger( _isFlagTrigger, _triggerType, _triggerValue, _towerBaseId, ... )
 	-- 没有天生触发器标识
 	if _isFlagTrigger and _triggerType ~= self.towerRes.triggerFlag then
+		return
+	end
+	if _towerBaseId and self.towerRes.baseId ~= _towerBaseId then
 		return
 	end
 	-- 触发器值没变
@@ -447,9 +498,51 @@ function BattleTower:FireTrigger( _isFlagTrigger, _triggerType, _triggerValue, .
 		return
 	end
 	self.triggerFlagMap[_triggerType] = _triggerValue
+	-- 触发标记改变
+	self:OnTriggerFlagChange(_triggerType, _triggerValue)
 
 	local triggerParam = BattleTriggerParam_New(self, nil, nil, _triggerValue)
 	gBattleTrigger:FireTrigger(_triggerType, triggerParam, self)
+	BattleTriggerParam_Destroy(triggerParam)
 end
 
-classend()
+local TriggerFlagSwitcher = {
+	[BattleTriggerType.TRIGGERSTATE] = function( self, _flag )
+		local atkEffectIds = self.towerRes.atkEffectIds
+		_flag = tonumber(_flag)
+		self.atkEffectId = atkEffectIds[_flag] or atkEffectIds[1] or 0
+	end
+}
+
+function BattleTower:OnTriggerFlagChange( _triggerType, _flag )
+	local switcher = TriggerFlagSwitcher[_triggerType]
+	if switcher then
+		switcher(self, _flag)
+	end
+end
+
+function BattleTower:GetPositionDistance( _position, ... )
+	local distanceIndex = math_ceil(_position / BattleConstants.BATTLE_ROAD_UNIT_LENGTH)
+	if distanceIndex == 0 then
+		distanceIndex = 1
+	end
+	return self.monsterDistanceList[distanceIndex] or 15
+end
+
+function BattleTower:SetPosIndex( _posIndex, ... )
+	self.posIndex = _posIndex
+	-- 距离数值表
+	self.monsterDistanceList = BattleMonsterDistance[_posIndex]
+end
+
+function BattleTower:RefreshSameMonsterAttackTimes( _monster, ... )
+	local paramMap = self.paramMap
+	local sameMonsterParam = paramMap[BattleParamType.SAMEMONSTERATTACKTIMES]
+	if sameMonsterParam then
+		local lastMonsterParam = paramMap[BattleParamType.LASTMONSTER]
+		sameMonsterParam.value = lastMonsterParam.value == _monster.monsterId and sameMonsterParam.value + 1 or 1
+		lastMonsterParam.value = _monster.monsterId
+		return sameMonsterParam.value
+	end
+	return -1
+end

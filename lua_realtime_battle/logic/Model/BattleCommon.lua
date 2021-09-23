@@ -1,10 +1,13 @@
 -- 属性列表
 -- 带分支的必然为百分比
 -- 常规属性默认只有branch 1一条分支
-class('AttributeList')
+AttributeList = xclass('AttributeList')
+
+local table_insert = table.insert
 
 local TSAttributeList = gModel.TSAttributeList
 local TSAttributeBranchMap = gModel.TSAttributeBranchMap
+local TS2Int = gModel.TS2Int
 
 function AttributeList:ctor( ... )
 	self.valueList = {}
@@ -15,17 +18,23 @@ end
 function AttributeList:Serialize( ... )
 	local tAttri = nil
 	for attrType, branchValueList in pairs(self.valueList) do
+		local tAttriBranchMap = false
 		for branch, value in pairs(branchValueList) do
 			if value ~= 0 then
 				if not tAttri then
 					tAttri = TSAttributeList:new{}
 					tAttri.ValueMap = {}
 				end
-				if not tAttri.ValueMap[attrType] then
-					tAttri.ValueMap[attrType] = TSAttributeBranchMap:new{}
-					tAttri.ValueMap[attrType].BranchMap = {}
+				if not tAttriBranchMap then
+					tAttriBranchMap = TSAttributeBranchMap:new{}
+					tAttriBranchMap.AttriType = attrType
+					tAttriBranchMap.BranchList = {}
+					table_insert(tAttri.ValueMap, tAttriBranchMap)
 				end
-				tAttri.ValueMap[attrType].BranchMap[branch] = value
+				local tValue = TS2Int:new{}
+				tValue.Arg0 = branch
+				tValue.Arg1 = value
+				table_insert(tAttriBranchMap.BranchList, tValue)
 			end
 		end
 	end
@@ -39,16 +48,19 @@ function AttributeList:DeSerialize( _tAttribute, ... )
 	local max = 0
 	local allValueList = {}
 	self.valueList = allValueList
-	for attrType, attrBranch in pairs(_tAttribute.ValueMap) do
+	for n = 1, #_tAttribute.ValueMap do
+		local tAttriBranchMap = _tAttribute.ValueMap[n]
+		local attrType = tAttriBranchMap.AttriType
 		local attrValueList = {}
 		allValueList[attrType] = attrValueList
 		max = 0
-		if attrBranch then
-			for branch, value in pairs(attrBranch.BranchMap) do
-				attrValueList[branch] = value
-				if branch > max then
-					max = branch
-				end
+		for i = 1, #tAttriBranchMap.BranchList do
+			local tValue = tAttriBranchMap.BranchList[i]
+			local branch = tValue.Arg0
+			local value = tValue.Arg1
+			attrValueList[branch] = value
+			if branch > max then
+				max = branch
 			end
 		end
 		for i = 1, max do
@@ -109,5 +121,3 @@ function AttributeList:GetAttribute( _attrType, _branch, _isPercent, ... )
 	self.dirtyList[_attrType] = false
 	return result
 end
-
-classend()

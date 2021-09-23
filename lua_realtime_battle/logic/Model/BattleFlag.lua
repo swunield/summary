@@ -2,76 +2,83 @@
 --- class BattleFlag
 -- @classmod BattleFlag
 -- 标记类
-class('BattleFlag')
+BattleFlag = xclass('BattleFlag')
+
+local table_insert = table.insert
 
 local TSFlag = gModel.TSFlag
+local TS2Int = gModel.TS2Int
 
----Constructor
-function BattleFlag:ctor( ... )
-	self.flagList = {}
+function BattleFlag.New()
+	return {}
 end
+NewBattleFlag = BattleFlag.New
 
-function BattleFlag:Serialize( ... )
+function BattleFlag.Serialize( _flag, ... )
 	local tFlag = nil
-	for flag, value in pairs(self.flagList) do
+	for flag, value in pairs(_flag) do
 		if value ~= 0 then
 			if not tFlag then
 				tFlag = TSFlag:new{}
-				tFlag.FlagMap = {}
-			end 
-			tFlag.FlagMap[flag] = value
+				tFlag.FlagList = {}
+			end
+			local tValue = TS2Int:new{}
+			tValue.Arg0 = flag
+			tValue.Arg1 = value
+			table_insert(tFlag.FlagList, tValue)
 		end
 	end
 	return tFlag
 end
+SerializeBattleFlag = BattleFlag.Serialize
 
-function BattleFlag:DeSerialize( _tFlag, ... )
+function BattleFlag.DeSerialize( _flag, _tFlag, ... )
 	if not _tFlag then
 		return
 	end
-	self.flagList = {}
-	for flag, value in pairs(_tFlag.FlagMap) do
-		self.flagList[flag] = value
+	for i = 1, #_tFlag.FlagList do
+		local tValue = _tFlag.FlagList[i]
+		_flag[tValue.Arg0] = tValue.Arg1
 	end
 end
+DeSerializeBattleFlag = BattleFlag.DeSerialize
 
--- 添加标记
-function BattleFlag:AddFlag( _flag, _value, ... )
+function BattleFlag.AddFlag( _flag, _type, _value, ... )
 	local value = _value or 1
-	if not self.flagList[_flag] then
-		self.flagList[_flag] = value
-	else
-		self.flagList[_flag] = value + self.flagList[_flag]
+	local oldValue = _flag[_type]
+	if not oldValue then
+		_flag[_type] = value
+		return true
 	end
+	_flag[_type] = value + oldValue
+	return oldValue == 0
 end
+AddBattleFlag = BattleFlag.AddFlag
 
--- 移除标记
-function BattleFlag:ClearFlag( _flag, ... )
-	self.flagList[_flag] = 0
+function BattleFlag.ClearFlag( _flag, _type, _value, ... )
+	local oldValue = _flag[_type]
+	if not oldValue then
+		return false
+	end
+	if _value then
+		local newValue = oldValue - _value
+		_flag[_type] = newValue
+		return newValue == 0 and oldValue ~= 0
+	end
+	_flag[_type] = 0
+	return oldValue ~= 0
 end
+ClearBattleFlag = BattleFlag.ClearFlag
 
 -- 是否有标记
-function BattleFlag:HasFlag( _flag )
-	return self.flagList[_flag] and self.flagList[_flag] ~= 0
+function BattleFlag.HasFlag( _flag, _type )
+	local value = _flag[_type]
+	return value and value ~= 0
 end
+HasBattleFlag = BattleFlag.HasFlag
 
 -- 标记数值
-function BattleFlag:GetFlagValue( _flag, ... )
-	return self.flagList[_flag] or 0
+function BattleFlag.GetFlagValue( _flag, _type, ... )
+	return _flag[_type] or 0
 end
-
--- 统计拥有标记数量
-function BattleFlag:StatFlagCount( ... )
-	local flags = { ... }
-	local statCount = 0
-	local flagCount = #flags
-	for i = 1, flagCount do
-		if self:HasFlag(flags[i]) then
-			statCount = statCount + 1
-		end
-	end 
-	return statCount
-end
-
-classend()
-export('BattleFlag', BattleFlag)
+GetBattleFlagValue = BattleFlag.GetFlagValue
