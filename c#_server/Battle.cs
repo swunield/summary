@@ -3,35 +3,25 @@ using Game.Model.Config;
 using Game.Service;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
 
 namespace Game.Model
 {
-    public enum BattleEndReason
-    {
-        None = 0,
-        TwoSameResult,             // 玩家全部上报，且结果一致
-        TwoDiffResult,             // 玩家全部上报，且结果不一致
-        OneSameResult,             // 只有一个玩家上报，且结果一致
-        OneDiffResult,             // 只有一个玩家上报，且结果不一致
-        NoOpOverTime,              // 玩家全部无操作超时，强制结算
-        NoRealTime,                // 非真人PK
-    }
-
     public interface ILuaSerializable
     {
         string ToLua();
     }
 
-    [EntityTable]
-    public partial class TBattleRecord : BaseEntity, ILuaSerializable
+    [EntityTable( StorageType = EntityTableStorageType.Memory | EntityTableStorageType.RemoteKv, StorageFinderType = typeof(BattleRecordStorageFinder))]
+    public partial class TBattleRecord : BaseEntity
     {
         public override string PrimaryKey => BattleId;
 
         public static DataEntityContainer<TBattleRecord> Cache => CachePool.GetContainer<TBattleRecord>();
 
-        public BattleEndReason EndReason { get; set; } = BattleEndReason.None;
+        public string Reason { get; set; }
 
         // 战斗时间
         [EntityField(MysqlIgnore = true)]
@@ -49,19 +39,28 @@ namespace Game.Model
         [EntityField(MysqlIgnore = true)]
         public bool IsSimulating { get; set; } = false;
 
-        public string ToLua()
+        public static string GenerateBattleId(int areaId)
         {
-            StringBuilder builder = new StringBuilder();
-            builder.Append("{");
-            builder.Append($"BattleId='{BattleId}',");
-            builder.Append($"BattleVersion={BattleVersion},");
-            builder.Append($"BattleSeed={BattleSeed},");
-            builder.Append($"BattleType={BattleType},");
-            builder.Append($"IsRealTime={IsRealTime.ToString().ToLower()},");
-            builder.Append($"FrameCount={FrameCount},");
-            builder.Append($"PlayerList={{{string.Join(",", PlayerList.Select(player => player.ToLua()))}}}");
-            builder.Append("}");
-            return builder.ToString();
+            return $"{areaId}.{Guid.NewGuid().ToString("N")}";
+        }
+
+        public static int ParseAreaIdFromBattleId(string battleId)
+        {
+            return int.Parse(Path.GetFileNameWithoutExtension(battleId));
+        }
+
+        public TBattleRecord(List<MatchUser> users, string battleId = null)
+        {
+            if (users == null || users.Count == 0) return;
+            BattleId = string.IsNullOrEmpty(battleId) ? Guid.NewGuid().ToString("N") : battleId;
+            BattleVersion = BattleService.BATTLE_VERSION;
+            BattleSeed = BattleService.GenerateSeed();
+            BattleType = users[0].BattleType;
+            PlayerList = users.Select(u => new TBattlePlayer(u)).ToList();
+            FrameCount = -1;
+            IsRealTime = !users.Any(u => u.IsRobot);
+            BattleResult = null;
+            SnapShot = null;
         }
 
         public TBattlePlayer GetBattlePlayer(int playerId)
@@ -89,108 +88,70 @@ namespace Game.Model
         }
     }
 
-    public partial class TBattleHero : ILuaSerializable
+    public partial class TBattleHero
     {
-        public string ToLua()
+        public TBattleHero(int heroId)
         {
-            StringBuilder builder = new StringBuilder();
-            builder.Append("{");
-            builder.Append($"HeroId={HeroId},");
-            builder.Append($"ScrollPooi={{{string.Join(",", ScrollPooi.Select(scroll => scroll.ToString()))}}}");
-            builder.Append("}");
-            return builder.ToString();
+            HeroId = heroId;
+        }
+    }
+
+    public partial class TBattlePlayer
+    {
+        public TBattlePlayer(MatchUser user)
+        {
+            if (user == null) return;
+            PlayerId = user.UserId;
+            PlayerName = user.UserName;
+            PlayerLevel = user.CurLevel;
+            ServerId = user.ServerId;
+            PlayerSeed = BattleService.GenerateSeed();
+            TowerPool = user.TowerPool;
+            Hero = user.Hero;
+            CriticalScale = user.CriticalScale;
+            PlayerFrame = new TBattlePlayerFrame() { FrameList = new List<TBattleFrame>() };
+            PlayerAI = user.PlayerAI;
+            FieldId = user.FieldId;
+        }
+    }
+
+    public partial class TBattleResult
+    {
+        public TBattleResult(int winPlayer, int frameCount, int round, bool isPoorNet)
+        {
+            WinPlayerId = winPlayer;
+            FrameCount = frameCount;
+            RoundNum = round;
+            SettleRound = round;
+            IsPoorNet = isPoorNet;
         }
 
-        public static TBattleHero Build(int userId, THero hero)
+        public TBattleResult(RoomUserCoopReport coopReport)
         {
-            var heroId = ConfigService.GetHeroResIdByLevel(hero.Card.BaseId, hero.Card.Level);
-            if (heroId == 0)
+            FrameCount = coopReport == null ? 0 : coopReport.FrameCount;
+            RoundNum = coopReport == null ? 1 : coopReport.RoundNum;
+            SettleRound = RoundNum;
+        }
+        public TBattleResult(TBattleResult result, bool isPoorNet = true)
+        {
+            if (result != null)
             {
-                return null;
+                this.WinPlayerId = result.WinPlayerId;
+                this.FrameCount = result.FrameCount;
+                this.RoundNum = result.RoundNum;
+                this.SettleRound = result.SettleRound;
             }
-
-            var scrollPackage = TUserScrollPackage.Cache.FindKey(userId);
-            if (scrollPackage == null)
-            {
-                return null;
-            }
-
-            var battleHero = new TBattleHero()
-            {
-                HeroId = heroId,
-            };
-            for (int i = 0; i < hero.ScrollPool.Count; i++)
-            {
-                var scrollBaseId = hero.ScrollPool[i];
-                battleHero.ScrollPooi.Add(scrollPackage.GetScrollResId(scrollBaseId));
-            }
-            return battleHero;
-        }
-    }
-
-    public partial class TBattlePlayer : ILuaSerializable
-    {
-        public string ToLua()
-        {
-            StringBuilder builder = new StringBuilder();
-            builder.Append("{");
-            builder.Append($"PlayerId={PlayerId},");
-            builder.Append($"PlayerSeed={PlayerSeed},");
-            builder.Append($"ServerId={ServerId},");
-            builder.Append($"PlayerName='{PlayerName}',");
-            builder.Append($"PlayerLevel={PlayerLevel},");
-            builder.Append($"TowerPool={{{string.Join(",", TowerPool.Select(tower => tower.ToString()))}}},");
-            builder.Append($"Hero={Hero.ToLua()},");
-            builder.Append($"PlayerFrame={PlayerFrame.ToLua()}");
-            builder.Append("}");
-            return builder.ToString();
-        }
-    }
-
-    public partial class TBattlePlayerFrame : ILuaSerializable
-    {
-        public string ToLua()
-        {
-            StringBuilder builder = new StringBuilder();
-            builder.Append("{");
-            builder.Append($"FrameList={{{string.Join(",", FrameList.Select(frame => frame.ToLua()))}}}");
-            builder.Append("}");
-            return builder.ToString();
-        }
-    }
-
-    public partial class TBattleFrame : ILuaSerializable
-    {
-        public string ToLua()
-        {
-            StringBuilder builder = new StringBuilder();
-            builder.Append("{");
-            builder.Append($"FrameCount={FrameCount},");
-            builder.Append($"FrameType={FrameType},");
-            builder.Append($"Param1='{Param1}',");
-            builder.Append($"Param2='{Param2}',");
-            builder.Append($"Point={Point},");
-            builder.Append($"FrameId={FrameId}");
-            builder.Append("}");
-            return builder.ToString();
-        }
-    }
-
-    public partial class TBattleResult : ILuaSerializable
-    {
-        public string ToLua()
-        {
-            StringBuilder builder = new StringBuilder();
-            builder.Append("{");
-            builder.Append($"FrameCount={FrameCount},");
-            builder.Append($"WinPlayerId={WinPlayerId}");
-            builder.Append("}");
-            return builder.ToString();
+            IsPoorNet = isPoorNet;
         }
 
         public bool IsSameResult(TBattleResult result)
         {
-            return WinPlayerId == result.WinPlayerId;
+            return WinPlayerId == result.WinPlayerId && RoundNum == result.RoundNum;
+        }
+
+        public void SetBattleType(int battleType)
+        {
+            BattleType = battleType;
         }
     }
 }
